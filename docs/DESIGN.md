@@ -83,7 +83,7 @@ Every change reports one result per scale. Use these exact statuses:
 | `unknown` | Timeout or lost connection after sending. State unknown |
 | `unreachable` | Could not connect. Nothing sent |
 | `skipped_not_write_enabled` | The config does not allow writes to this scale |
-| `not_available` | The operation is not known yet, such as delete |
+| `not_available` | Nothing reports this now that delete works. It stays so clients that know it keep working |
 | `wrong_scale` | The serial at that address did not match the config. Nothing written |
 | `mismatch` | Accepted, but reading it back shows something different |
 | `drift_refused` | The scale's record differs from the catalog and that was not acknowledged. Nothing written |
@@ -93,7 +93,7 @@ A change is a full success only if every configured scale is `verified`. `accept
 
 ## Validation
 
-`service.py` validates before anything reaches a scale, because the scale does not. Price is more than 0, at most 999.99, with two decimals. PLU is exactly 4 digits. Code equals PLU on new items. No duplicate PLU. Id within 1 to 500. Description is not empty, has no TAB, CR or LF, and has a maximum length set in config. Use 35 until the lab finds the real limit. Characters allowed are printable ASCII until the lab shows more is safe.
+`service.py` validates before anything reaches a scale, because the scale does not. Price is more than 0, at most 999.99, with two decimals. PLU is exactly 4 digits. Code always equals PLU. PLUs 9001 to 9500 are held back for placeholders, so no add or edit may use one. No duplicate PLU. Id within 1 to 500. Description is not empty, has no TAB, CR or LF, and has a maximum length set in config. Use 35 until the lab finds the real limit. Characters allowed are printable ASCII until the lab shows more is safe.
 
 ## Each scale is the truth about itself
 
@@ -115,11 +115,23 @@ The catalog records, per scale, the last record read, and when. A change counts 
 
 The service must never create a catalog. It refuses to run unless the catalog has a seeded marker, and service and seed share one path rule.
 
-Fields 7 to 12 and 14 to 20 are never set by callers as raw values. A new item takes one named choice, sold by weight or by piece, which sets field 7. All other fields take the defaults. Edits can change only price, description, PLU and Code. Editing a PLU sets Code to match, but only after a FRONT test proves that a Code change is safe. Until then, keep the Code as it stands and flag it. Id decides which item is replaced, per the lab.
+Fields 7 to 12 and 14 to 20 are never set by callers as raw values. A new item takes one named choice, sold by weight or by piece, which sets field 7. All other fields take the defaults. Edits can change only price, description, PLU and Code. Editing a PLU sets Code to match, and a request where they differ is refused. Bart's check at FRONT on November 2 showed that a record at the same id with a new Code and PLU works, and that the old PLU stops working. Id decides which item is replaced, per the lab.
+
+A PLU change is verified only if the id reads back as the new record and neither the old PLU nor the new one is on another id of that scale. It can land on one scale and not another. The catalog moves once any scale took it, and it notes each other scale as possibly still on the old record. A retry is the same edit. It accepts a scale holding either the old record or the new PLU, and treats anything else as a different product. Until it finishes, the old PLU is not free for another item. Only an edit that names the PLU may write a new one over what a scale holds. A price edit does not. Settling with `take="catalog"` does not either, and refuses with `plu_edit_held`, because it could overwrite what a scale holds with nobody having asked for a PLU change.
 
 ## Deletes
 
-Delete stays `not_available`. `EP` is unproven and may have taken FRONT off the network. Never send any `E` message from the library. When the lab proves a delete, only `protocol.py`, `scale.py` and `service.py` should need to change. It will back up first, read first and read back, like any write.
+A delete overwrites the id with a placeholder record. Bart approved this, and checked it at FRONT on November 2. `EP` is unproven and may have taken FRONT off the network, so the library never sends any `E` message, and it has no way to frame one.
+
+The placeholder for id N has Code and PLU `9000 + N`, description `UNUSED`, price `0.01`, field 6 empty, the default fields 7 to 12 and 14 to 20, and a new timestamp. It is a normal `GP` record. A delete backs up first, reads first and reads back, like any write. It is verified only if the id holds the placeholder and the old PLU is on no other id of that scale. A different product at the id cannot be acknowledged. Field drift on the same product needs its token, including a timestamp alone.
+
+A placeholder on a scale is an empty slot. It is not drift, not an orphan, and never in the catalog. A deleted item keeps its id until every configured scale has confirmed the placeholder. Then an add may write over it.
+
+## Gaps and reloads
+
+A read can freeze a scale. See `docs/PROTOCOL.md` section 3. A gap in the ids is suspected, not proven, so no write may leave one. Before writing an id above a scale's last filled id plus one, the ids between get placeholders in the same send, in id order, and the result says so.
+
+`scaleconnect reload` is for a person at the command line, not the page or the MCP server. It checks identity with `CX` alone, sends ids 1 to the highest catalog id with placeholders for the rest, and reads once only if every record was accepted. It is the repair for a frozen scale, a scale fresh from a product reset, and a scale whose ids differ from the catalog.
 
 ## Catalog
 

@@ -100,9 +100,9 @@ Both autostart entries run when Bart's desktop session starts. It does not run a
 
 The script is safe to run twice. It starts the page only if it is not already answering. When started with `--no-open`, it tries again every 5 seconds for about 90 seconds, in case the WiFi is not up yet.
 
-## Turn on PLU editing later
+## PLU editing
 
-The library holds PLU edits for now (`plu_edit_held`), so the edit screen shows the PLU as read only with a short note. When the hold is lifted, set `PLU_EDIT_ENABLED = True` near the top of `src/scaleconnect/web/__main__.py` and restart the page. The library still has the last word, and a PLU change it refuses will show its reason.
+PLU editing is on. `PLU_EDIT_ENABLED` is `True` near the top of `src/scaleconnect/web/__main__.py`, so the edit screen lets staff change the PLU. Code always follows the PLU, and the page never shows it as a field. The library still checks every PLU change, and a change it refuses shows its reason. To turn the PLU box back to read only, set the value to `False` and restart the page.
 
 ## Limits to know about
 

@@ -36,6 +36,10 @@ batch, a wrong check character from the client, a message sent before the
 previous reply, or a message out of sequence. The pytest fixture in
 tests/conftest.py fails the test if any violation was recorded.
 
+A read can freeze a real scale (PROTOCOL.md section 3). freeze_lp_at_id and
+freeze_on_gap copy that: no reply to the read, the open connection stays silent,
+and new connections are refused until reboot(). Nothing else changes on the table.
+
 ASSUMPTIONS, because nobody has seen it on a real scale (PROTOCOL.md section 3
 "Not seen yet"):
   * GAPS. The real scale table was always full (ids 1 to 500). With gaps, this
@@ -201,6 +205,8 @@ class FakeScale:
         allow_lp_params: bool = False,
         strict_sequence: bool = True,
         store_valid_in_errored_batch: bool = False,
+        freeze_lp_at_id: int | None = None,
+        freeze_on_gap: bool = False,
     ):
         """
         reply_delay: seconds to wait before replying, by kind, for example
@@ -230,6 +236,14 @@ class FakeScale:
         strict_sequence: bX01XX must come before GP, and nothing after GPF0.
         store_valid_in_errored_batch: unknown on the real scale. If a GP
             batch has one bad id, are the good records kept? Default no.
+        freeze_lp_at_id: a read hangs on the block holding this id, or the
+            first block past it, and the scale drops off the network until
+            reboot(). COUNTER did this asking for ids 41 to 45.
+        freeze_on_gap: a read hangs the same way on the block that reaches a
+            gap: an empty id with a record after it, or an empty start. A table
+            with ids 1 to N all filled reads fine. Not proven on a real scale,
+            only suspected. Without this option a gap reads as described under
+            ASSUMPTIONS below.
         """
         self.host = "127.0.0.1"
         self._port = port
@@ -248,6 +262,10 @@ class FakeScale:
         self.allow_lp_params = allow_lp_params
         self.strict_sequence = strict_sequence
         self.store_valid_in_errored_batch = store_valid_in_errored_batch
+        self.freeze_lp_at_id = freeze_lp_at_id
+        self.freeze_on_gap = freeze_on_gap
+        self.frozen = False
+        self.freezes = 0
 
         self._lock = threading.RLock()
         self._items: dict[int, Record] = {}
@@ -445,7 +463,7 @@ class FakeScale:
         def reopen() -> None:
             if self._stop.is_set() or gen != self._refusal_gen:
                 return
-            if mode == "refuse":
+            if mode == "refuse" and not self.frozen:
                 self.start_listening()
             with self._lock:
                 held, self._held = self._held, []
@@ -459,6 +477,34 @@ class FakeScale:
         t.daemon = True
         self._timers.append(t)
         t.start()
+
+    def _freeze(self) -> None:
+        """Off the network. The connection that froze it stays open and silent."""
+        with self._lock:
+            self.frozen = True
+            self.freezes += 1
+        self.stop_listening()
+
+    def reboot(self) -> None:
+        """Back on the network after a freeze, holding what it held. The table has not changed,
+        so whatever froze it will freeze it again."""
+        with self._lock:
+            self.frozen = False
+        self.start_listening()
+
+    def _gap_at(self) -> int | None:
+        """The lowest empty id with a record after it."""
+        with self._lock:
+            ids = sorted(i for i in self._items if i >= 1)
+        return next((i for i in range(1, ids[-1]) if i not in ids), None) if ids else None
+
+    def _read_freezes(self, conn: _Conn) -> bool:
+        """Does the block this read is asking for now freeze the scale?"""
+        if conn.block_at >= len(conn.blocks):
+            return False
+        marks = [self.freeze_lp_at_id, self._gap_at() if self.freeze_on_gap else None]
+        marks = [m for m in marks if m is not None]
+        return bool(marks) and int(conn.blocks[conn.block_at][-1][0]) >= min(marks)
 
     def reset_next_connections(self, n: int = 1) -> None:
         """Accept the next n connections and reset them at once."""
@@ -918,6 +964,11 @@ class FakeScale:
             echo = check_char(raw[:-2])
             reply = gp_reply(echo, result)
         else:  # pragma: no cover
+            return False
+
+        if kind in ("LP", "Ok") and self._read_freezes(conn):
+            self._freeze()
+            self._wait(conn, 3600.0)
             return False
 
         fault = self._take_fault(

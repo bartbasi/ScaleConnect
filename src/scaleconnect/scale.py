@@ -2,8 +2,8 @@
 
 Standard library only, plus this package's own standard library modules.
 
-Public operations are named: identify, read_items, send_items and delete_items. There
-is no way to send arbitrary text. Two paths reach the socket, each with its own guard:
+Public operations are named: identify, read_items and send_items. There is no way to
+send arbitrary text. Two paths reach the socket, each with its own guard:
 
 - The write path needs write_enabled. It sends only RI, bX01XX, GP batches and GPF0.
 - The read path needs write_enabled or read_enabled. It sends only CX, LP and Ok.
@@ -14,8 +14,9 @@ so no caller can skip it. Nothing here resends a record after sending has begun.
 
 Read blocks never go in the reply list that reaches the change log.
 
-Adding deletes: when docs/PROTOCOL.md holds a proven delete, add a builder to
-protocol.py, set DELETE_AVAILABLE and fill in delete_items. Do not guess messages.
+A delete has no message of its own. It is a send_items call with a placeholder record,
+because overwriting an id removes the old PLU. No E message exists here, and none can be
+framed.
 """
 
 from __future__ import annotations
@@ -31,7 +32,11 @@ from .errors import NotReadEnabled, NotWriteEnabled
 from .models import ITEM_NOT_SENT, MAX_ITEM_ID, STATUS_SEVERITY, Item, ScaleStatus
 
 READ_AVAILABLE = True
-DELETE_AVAILABLE = False
+DELETE_AVAILABLE = True
+
+# A read has frozen real scales: no reply, then gone from the network until rebooted. See
+# docs/PROTOCOL.md section 3. Any read or identity that gets no reply says so.
+FROZEN_NOTE = "The scale may have frozen, and may need a reboot."
 
 _READ_SIZE = 4096
 _CLOSE_WAIT = 2.0
@@ -105,10 +110,11 @@ class _CouldNotConnect(Exception):
 
 
 class _ReadStopped(Exception):
-    def __init__(self, message: str, *, before_first_block: bool = False, no_reply: bool = False) -> None:
+    def __init__(self, message: str, *, before_first_block: bool = False, no_reply: bool = False, silent: bool = False) -> None:
         super().__init__(message)
         self.before_first_block = before_first_block
         self.no_reply = no_reply
+        self.silent = silent  # the scale stopped answering, as opposed to answering badly
 
 
 @dataclass
@@ -293,11 +299,14 @@ class ScaleClient:
             found = protocol.parse_identity(reply)
         except _CouldNotConnect as exc:
             if exc.connected:
-                return IdentityCheck(False, ScaleStatus.READ_FAILED, f"{unconfirmed} ({exc}). Nothing was written.")
-            return IdentityCheck(False, ScaleStatus.UNREACHABLE, f"{name}: could not connect ({exc}). Nothing was sent.")
+                return IdentityCheck(False, ScaleStatus.READ_FAILED, f"{unconfirmed} ({exc}). Nothing was written. {FROZEN_NOTE}")
+            return IdentityCheck(False, ScaleStatus.UNREACHABLE, f"{name}: could not connect ({exc}). Nothing was sent. {FROZEN_NOTE}")
         except OSError as exc:
-            return IdentityCheck(False, ScaleStatus.UNREACHABLE, f"{name}: could not connect ({_describe(exc)}). Nothing was sent.")
-        except (_NoReplyYet, _ReplyLost, protocol.ReadReplyError) as exc:
+            return IdentityCheck(False, ScaleStatus.UNREACHABLE, f"{name}: could not connect ({_describe(exc)}). Nothing was sent. {FROZEN_NOTE}")
+        except (_NoReplyYet, _ReplyLost) as exc:
+            detail = exc.args[0] if exc.args else exc.__class__.__name__
+            return IdentityCheck(False, ScaleStatus.READ_FAILED, f"{unconfirmed} ({detail}). Nothing was written. {FROZEN_NOTE}")
+        except protocol.ReadReplyError as exc:
             detail = exc.args[0] if exc.args else exc.__class__.__name__
             return IdentityCheck(False, ScaleStatus.READ_FAILED, f"{unconfirmed} ({detail}). Nothing was written.")
         if found != expected:
@@ -343,16 +352,24 @@ class ScaleClient:
             items, complete = self._connect_with_retry(attempt)
         except _CouldNotConnect as exc:
             if exc.connected:
-                return ReadResult(False, ScaleStatus.READ_FAILED, f"{name}: the read failed ({exc}).", {})
-            return ReadResult(False, ScaleStatus.UNREACHABLE, f"{name}: could not connect to read ({exc}).", {})
+                return ReadResult(False, ScaleStatus.READ_FAILED, f"{name}: the read failed ({exc}). {FROZEN_NOTE}", {})
+            return ReadResult(False, ScaleStatus.UNREACHABLE, f"{name}: could not connect to read ({exc}). {FROZEN_NOTE}", {})
         except _ReadStopped as exc:
-            return ReadResult(False, ScaleStatus.READ_FAILED, f"{name}: the read failed ({exc}).", {})
+            return ReadResult(False, ScaleStatus.READ_FAILED, _stopped_message(name, exc), {})
         return ReadResult(True, None, f"{name}: read {len(items)} records.", items, complete)
 
     def _read_patiently(self, up_to_id: int | None) -> ReadResult:
         name = self._scale.name
         deadline = time.monotonic() + self._settings.read_back_window_seconds
         last = "no attempt was made"
+        silent = True
+
+        def out_of_time() -> ReadResult:
+            text = f"{name}: could not read back in time ({last})."
+            if silent and FROZEN_NOTE not in text:
+                text = f"{text} {FROZEN_NOTE}"
+            return ReadResult(False, ScaleStatus.READ_FAILED, text, {})
+
         # The window is real time, whichever way the scale says no: at once, or not at all.
         while True:
             if not self._identity_confirmed:
@@ -361,27 +378,30 @@ class ScaleClient:
                     return ReadResult(False, identity.status, identity.message, {})
                 if not identity.ok:
                     last = identity.message
+                    silent = True
                     if time.monotonic() >= deadline:
-                        return ReadResult(False, ScaleStatus.READ_FAILED, f"{name}: could not read back in time ({last}).", {})
+                        return out_of_time()
                     self._sleep(self._settings.read_back_retry_seconds)
                     continue
             try:
                 sock = self._connect_read()
             except OSError as exc:
                 last = _describe(exc)
+                silent = True
             else:
                 try:
                     items, complete = self._read_table(sock, up_to_id)
                     return ReadResult(True, None, f"{name}: read {len(items)} records.", items, complete)
                 except _ReadStopped as exc:
                     last = str(exc)
+                    silent = exc.silent
                     # Once blocks have come, a problem is a real stall. Stop.
                     if not exc.before_first_block:
-                        return ReadResult(False, ScaleStatus.READ_FAILED, f"{name}: the read failed ({last}).", {})
+                        return ReadResult(False, ScaleStatus.READ_FAILED, _stopped_message(name, exc), {})
                 finally:
                     self._end_session(sock)
             if time.monotonic() >= deadline:
-                return ReadResult(False, ScaleStatus.READ_FAILED, f"{name}: could not read back in time ({last}).", {})
+                return out_of_time()
             self._sleep(self._settings.read_back_retry_seconds)
 
     def _read_table(self, sock: socket.socket, up_to_id: int | None) -> tuple[dict[int, Item], bool]:
@@ -398,10 +418,10 @@ class ScaleClient:
                     self._send_read_message(sock, "Ok")
                 block, buffer = self._await_block(sock, buffer)
             except _ReadStopped as exc:
-                raise _ReadStopped(str(exc), before_first_block=first, no_reply=first and exc.no_reply) from exc
+                raise _ReadStopped(str(exc), before_first_block=first, no_reply=first and exc.no_reply, silent=exc.silent) from exc
             except OSError as exc:
                 dropped = first and isinstance(exc, ConnectionError)
-                raise _ReadStopped(_describe(exc), before_first_block=first, no_reply=dropped) from exc
+                raise _ReadStopped(_describe(exc), before_first_block=first, no_reply=dropped, silent=True) from exc
             first = False
             if block.end:
                 return items, True
@@ -428,7 +448,7 @@ class ScaleClient:
                 return taken
             chunk = self._read_chunk(sock, deadline)
             if not chunk:
-                raise _ReadStopped("the scale closed the connection", no_reply=not buffer)
+                raise _ReadStopped("the scale closed the connection", no_reply=not buffer, silent=True)
             buffer += chunk
 
     # ------------------------------------------------------------ the write session
@@ -550,18 +570,6 @@ class ScaleClient:
             return self._report(batches, 0, "", str(exc), True)
         return self._report(batches, 1, note, "", False)
 
-    def delete_items(self, items: Sequence[Item]) -> SendReport:
-        """Not available until the lab proves a delete. Sends nothing."""
-        self._require_write_enabled()
-        return SendReport(
-            scale=self._scale.name,
-            status=ScaleStatus.NOT_AVAILABLE,
-            message="Delete is not available yet. Nothing was sent.",
-            attempts=0,
-            items=tuple(ItemOutcome(i.id, i.plu, ScaleStatus.NOT_AVAILABLE.value) for i in items),
-            replies=(),
-        )
-
     # ------------------------------------------------------------ results
 
     def _report(self, batches: Sequence[_Batch], attempts: int, note: str, no_session: str, open_refused: bool) -> SendReport:
@@ -600,6 +608,11 @@ class ScaleClient:
         else:
             message = f"{name}: the result is unknown. {note}".strip()
         return SendReport(name, overall, message, attempts, tuple(outcomes), tuple(self._replies))
+
+
+def _stopped_message(name: str, exc: _ReadStopped) -> str:
+    text = f"{name}: the read failed ({exc})."
+    return f"{text} {FROZEN_NOTE}" if exc.silent else text
 
 
 def _describe(exc: OSError) -> str:

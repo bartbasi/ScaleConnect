@@ -28,6 +28,7 @@ Words in capitals are values you supply. An option marked "can repeat" can be gi
 | `read` | Show what the enabled scales hold now. Writes nothing | Yes, reads |
 | `settle` | Preview settling one item that differs on one scale | Yes, reads |
 | `resolve CHANGE_ID --note TEXT` | Close a change that never finished, after someone has looked | No |
+| `reload --scale NAME --yes` | Overwrite ids 1 to N on one scale with the catalog. No read first | Yes, writes, then one read |
 
 ### preview
 
@@ -50,15 +51,16 @@ Each change is an object. Prices are text such as `"12.50"`, never a number.
 {"action": "add", "plu": "4002", "description": "Example Piece", "price": "3.00", "sold_by": "piece"}
 {"action": "edit", "target_plu": "4001", "price": "12.75"}
 {"action": "edit", "target_id": 7, "description": "New Name", "price": "4.00"}
+{"action": "edit", "target_plu": "4001", "plu": "4005"}
 {"action": "delete", "target_plu": "4002"}
 ```
 
-Delete is not available yet. A preview with a delete warns, and apply reports `not_available` for it. Changing a PLU or Code gives the error `plu_edit_held`. The full list of keys, warnings and error codes is in `docs/LIBRARY.md`.
+A delete overwrites the item's id on each scale with a placeholder record named `UNUSED`, so the old PLU stops working. A preview with a delete gives a warning that must be acknowledged at apply. PLUs 9001 to 9500 belong to placeholders, so an add or edit that uses one gets the error `reserved_plu`. An edit can change a PLU with `"plu"`, and Code always follows it. A preview with a PLU change also gives a warning that must be acknowledged at apply, because the old PLU stops working. If it lands on one scale and not another, repeat the same edit. Settling never changes a PLU on a scale, and refuses with `plu_edit_held`. The full list of keys, warnings and error codes is in `docs/LIBRARY.md`.
 
 ### apply
 
 - `PREVIEW_ID`: the `preview_id` from a preview.
-- `--acknowledge-warnings`: allow every warning that needs it, such as a price more than 50 percent away, or a subset of scales. Only use it after a person has seen the warning.
+- `--acknowledge-warnings`: allow every warning that needs it, such as a price more than 50 percent away, a subset of scales, a delete or a PLU change. Only use it after a person has seen the warning.
 - `--acknowledge-drift TOKEN`: allow writing to a scale whose record differs from the catalog, for this exact token. Tokens come from the `drift` list in a preview or a result. Can repeat.
 - `--who NAME`: who is asking.
 
@@ -80,11 +82,38 @@ Previews settling one item that differs on one scale. Apply the preview with `ap
 
 A whole table read takes about 30 seconds at the default pace.
 
+If a read gets no reply, the message says the scale may have frozen and may need a reboot. Check the scale before trying again. A read has frozen scales with damaged or old records. A gap in the ids is suspected too, but not proven.
+
+### reload
+
+**This overwrites ids 1 to N on that scale.** N is the highest id in the catalog, counting deleted items. Whatever the scale holds at those ids is replaced, whether or not it matches the catalog. It is for a person at the command line, and it is not on the web page or the MCP server.
+
+- `--scale NAME`: required. One scale. It must be write enabled.
+- `--yes`: required. Without it nothing is sent, and the command exits 2.
+- `--who NAME`: who is asking.
+
+Use it for these:
+
+- A scale whose read freezes. Reboot it first. A full send has cured this.
+- A scale fresh from a product reset. It has nothing safe to read until it is reloaded.
+- A scale whose ids differ from the catalog, so a one item send would land on the wrong product. A reload puts it back in step.
+
+What it does, in order:
+
+1. Backs up the item list, as for any first write. It does not save what the scale holds, because that needs a read. The change log says so.
+2. Checks the serial with `CX`, and sends nothing else first. It does not read the scale first.
+3. Sends ids 1 to N in id order. A live item goes exactly as the catalog holds it. Any other id gets a placeholder, so no gap is left.
+4. Only if every record was accepted, reads the scale once and compares all 20 fields. It waits out the scale's busy gap after a send. If that read fails, the report says the scale may be frozen and need a reboot, and it does not try again.
+
+It prints one JSON object. Read `message`, then `status`. `ok` is true only if every record reads back as sent and no PLU is left on two ids. Ids above N are not touched, and `left_above` lists any real records there. If a send stops part way, `not_accepted` lists the ids, nothing is read, and the status is `unknown`. Run it again once the scale answers.
+
+Allow a few minutes. A full send of about 480 items took 90 to 160 seconds, then comes the read. The catalog's items do not change. Each scale needs its own reload.
+
 ## Output
 
 Output on standard output is always one JSON document, printed with an indent of 2. Prices are always text.
 
-- `capabilities`, `get`, `preview`, `settle`, `apply`, `change` and `resolve` print one JSON object.
+- `capabilities`, `get`, `preview`, `settle`, `apply`, `change`, `resolve` and `reload` print one JSON object.
 - `scales`, `search`, `changes`, `compare` and `read` print a JSON list.
 - On failure the output is:
 
@@ -108,20 +137,20 @@ A validation failure also has an `errors` list inside `error`.
 
 ## Scale statuses in a result
 
-`verified`, `accepted_not_verified`, `rejected`, `unknown`, `mismatch`, `unreachable`, `read_failed`, `wrong_scale`, `drift_refused`, `skipped_not_write_enabled`, `not_available`. What each one means is in `docs/LIBRARY.md`. Only `verified` on every configured scale is a full success. `accepted_not_verified` is a partial result.
+`verified`, `accepted_not_verified`, `rejected`, `unknown`, `mismatch`, `unreachable`, `read_failed`, `wrong_scale`, `drift_refused`, `skipped_not_write_enabled`. What each one means is in `docs/LIBRARY.md`. Only `verified` on every configured scale is a full success. `accepted_not_verified` is a partial result.
 
 ## Exit codes
 
 | Exit | Meaning |
 |---|---|
-| 0 | Done. For `apply`, the outcome is `success`. For `compare`, every contacted scale matches. For `read`, every contacted scale was read |
+| 0 | Done. For `apply`, the outcome is `success`. For `compare`, every contacted scale matches. For `read`, every contacted scale was read. For `reload`, `ok` is true |
 | 1 | Unexpected error |
-| 2 | Bad command line |
-| 3 | Validation failed, including a `preview` or `settle` with errors, or an unknown scale name |
+| 2 | Bad command line, including `reload` without `--yes` |
+| 3 | Validation failed, including a `preview` or `settle` with errors, an unknown scale name, or a `reload` of a scale that is not write enabled |
 | 4 | Not found: item, change or preview |
 | 5 | Preview expired, stale or already applied, or an interrupted change is in the way |
 | 6 | Warnings must be acknowledged |
-| 7 | `apply` ran but the outcome is not `success`. Or `compare` found differences or could not read. Or `read` could not read a scale. Read the output |
+| 7 | `apply` ran but the outcome is not `success`. Or `compare` found differences or could not read. Or `read` could not read a scale. Or `reload` ran and `ok` is false. Read the output |
 | 8 | Config problem, or no seeded catalog |
 | 9 | Backup failed. Nothing was sent |
 | 10 | Another apply is running. Nothing was sent |

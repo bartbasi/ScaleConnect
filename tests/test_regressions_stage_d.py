@@ -284,6 +284,46 @@ def test_H3_an_id_that_became_an_orphan_after_the_preview_is_not_success(env):
 # H4. A crash or log failure mid change is not reported, and work carries on
 # =====================================================================
 
+def test_H4_a_preview_is_used_up_only_together_with_its_start_in_the_log(env):
+    """A client looking up a preview must never find it used with no change behind it. It would be
+    told nothing was sent while the apply was about to send. A failed start proves it is one step."""
+    db = env.catalog._conn()
+    db.execute("CREATE TRIGGER no_start BEFORE INSERT ON change_log WHEN NEW.event = 'started' "
+               "BEGIN SELECT RAISE(ABORT, 'test'); END")
+    p = env.preview(EDIT_PRICE_12)
+    with pytest.raises(errors.LogFailed):
+        env.svc.apply_change(p.preview_id)
+    assert env.catalog.load_preview(p.preview_id)["consumed_by"] is None
+    assert env.svc.get_change_for_preview(p.preview_id) is None
+    assert env.silent("A")
+
+    db.execute("DROP TRIGGER no_start")
+    assert env.svc.apply_change(p.preview_id).verified, "the preview can still be used"
+
+
+def test_H4_a_client_looking_up_a_preview_during_apply_never_gets_change_not_found(env):
+    seen, errors_seen = [], []
+    stop = threading.Event()
+    p = env.preview(EDIT_PRICE_12)
+
+    def look():
+        while not stop.is_set():
+            try:
+                seen.append(env.svc.get_change_for_preview(p.preview_id))
+            except errors.ScaleConnectError as exc:
+                errors_seen.append(exc)
+
+    thread = threading.Thread(target=look)
+    thread.start()
+    try:
+        rec = env.svc.apply_change(p.preview_id)
+    finally:
+        stop.set()
+        thread.join()
+    assert errors_seen == [] and rec.verified
+    assert env.svc.get_change_for_preview(p.preview_id).change_id == rec.change_id
+
+
 def test_H4_a_log_failure_does_not_stop_the_other_scales_or_raise(make_env, monkeypatch):
     env = make_env({"A": True, "B": True})
     real = env.catalog.append_log
@@ -343,7 +383,7 @@ def test_H5_a_backup_exists_after_every_first_write_even_if_the_folder_was_delet
 def test_H5_a_delete_only_change_still_takes_the_backup_first(make_env):
     calls = []
     env = make_env({"A": True}, backup_hook=lambda scale, items, d: calls.append(scale))
-    env.attempt([{"action": "delete", "target_plu": "1002"}])
+    env.attempt([{"action": "delete", "target_plu": "1002"}], ack=True)
     assert calls == ["A"], "deletes must count as writes for the backup rule"
 
 
@@ -431,7 +471,7 @@ def test_M2_an_accepted_edit_with_a_delete_is_not_called_failed(env):
     rec = env.change([
         {"action": "edit", "target_plu": "1001", "price": "10.10"},
         {"action": "delete", "target_plu": "1002"},
-    ])
+    ], ack=True)
     assert price_on(env.fakes["A"]) == "10.10"
     assert "no scale accepted" not in rec.summary.lower(), rec.summary
     assert rec.outcome != "failed"
@@ -453,12 +493,14 @@ def test_M2_five_accepted_then_an_error_batch(make_env):
 # M3. A PLU can look free while a scale still holds it
 # =====================================================================
 
-def test_M3_changing_a_plu_is_held_until_a_front_test_proves_a_code_change(env):
-    # The reviewer\x27s sequence needs a PLU edit that one scale rejects. DESIGN.md holds PLU
-    # edits for now, so the sequence cannot start. This pins the hold.
-    p = env.svc.preview_changes([{"action": "edit", "target_plu": "1001", "plu": "1999"}])
-    assert not p.ok and p.errors[0].code == "plu_edit_held"
-    assert env.silent("A")
+def test_M3_an_old_plu_a_scale_still_holds_is_not_given_to_a_new_item(env3):
+    # The reviewer\x27s sequence: a PLU edit that one scale rejects, then an add of the old PLU.
+    env3.fakes["B"].error_on_ids(1)
+    rec = env3.change([{"action": "edit", "target_plu": "1001", "plu": "1999"}], ack=True)
+    assert env3.statuses(rec) == {"A": "verified", "B": "rejected", "C": "verified"}
+    assert env3.catalog.get_by_plu("1999").id == 1 and env3.fakes["B"].item(1)[2] == "1001"
+    p = env3.svc.preview_changes([{"action": "add", "plu": "1001", "description": "New", "price": "1.00"}])
+    assert not p.ok and p.errors[0].code == "duplicate_plu"
 
 
 @pytest.mark.parametrize("held_id", [4, 9])

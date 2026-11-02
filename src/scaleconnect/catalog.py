@@ -35,7 +35,7 @@ from .models import Item
 
 MIN_ID = 1
 MAX_ID = 500
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _LOCK_TRIES = 4
 _LOCK_GAP_SECONDS = 0.03
 BELIEFS = ("present", "absent", "unknown")
@@ -227,6 +227,15 @@ CREATE TABLE IF NOT EXISTS scale_read (
     PRIMARY KEY (scale, item_id)
 );
 
+CREATE TABLE IF NOT EXISTS plu_moves (
+    scale TEXT NOT NULL,
+    item_id INTEGER NOT NULL,
+    old_plu TEXT NOT NULL,
+    record TEXT NOT NULL,
+    noted_at TEXT NOT NULL,
+    PRIMARY KEY (scale, item_id, old_plu)
+);
+
 CREATE TABLE IF NOT EXISTS orphans (
     scale TEXT NOT NULL,
     item_id INTEGER NOT NULL CHECK (item_id BETWEEN {MIN_ID} AND {MAX_ID}),
@@ -406,6 +415,15 @@ class Catalog:
 
     def get_by_plu(self, plu: str) -> Item | None:
         row = self._conn().execute(_SELECT + " WHERE plu = ? AND deleted = 0", (plu,)).fetchone()
+        return _row_to_item(row) if row else None
+
+    def deleted_item_still_held(self, *, plu: str | None = None, item_id: int | None = None) -> Item | None:
+        """A deleted item that some scale may still hold, so a delete can be tried again there."""
+        column, value = ("plu", plu) if plu is not None else ("id", item_id)
+        row = self._conn().execute(
+            _SELECT + f" WHERE {column} = ? AND deleted = 1 AND id IN "
+            "(SELECT item_id FROM scale_state WHERE belief IN ('present', 'unknown')) "
+            "ORDER BY deleted_at DESC, id DESC LIMIT 1", (value,)).fetchone()
         return _row_to_item(row) if row else None
 
     def search(self, query: str, limit: int = 50) -> list[Item]:
@@ -595,28 +613,41 @@ class Catalog:
         Pass belief="absent" when a delete was accepted. `record` is the item
         believed to be on the scale.
         """
+        with self._tx() as db:
+            self._write_scale_state(db, item_id, scale, status, change_id, at, belief, record)
+
+    def record_scale_states(self, scale: str, rows: Iterable[tuple[int, str, str | None, Item | None]],
+                            change_id: str, at: str) -> None:
+        """Many rows of (item id, status, belief, record) for one scale, in one transaction.
+        A full send has up to 500, and each transaction waits for the disk."""
+        with self._tx() as db:
+            for item_id, status, belief, record in rows:
+                self._write_scale_state(db, item_id, scale, status, change_id, at, belief, record)
+
+    @staticmethod
+    def _write_scale_state(db: sqlite3.Connection, item_id: int, scale: str, status: str, change_id: str, at: str,
+                           belief: str | None, record: Item | None) -> None:
         n = _check_id(item_id)
         if belief is not None and belief not in BELIEFS:
             raise CatalogError(f"belief must be one of {BELIEFS}")
-        with self._tx() as db:
-            if belief is None:
-                if status in _SUCCESS:
-                    belief = "present"
-                elif status == "unknown":
-                    belief = "unknown"
-                else:
-                    prev = db.execute("SELECT belief FROM scale_state WHERE scale = ? AND item_id = ?",
-                                      (scale, n)).fetchone()
-                    belief = prev["belief"] if prev else "unknown"
-            rec = json.dumps(_item_values(record), ensure_ascii=False) if record is not None else None
-            db.execute(
-                "INSERT INTO scale_state (scale, item_id, status, change_id, at, belief, record) "
-                "VALUES (?,?,?,?,?,?,?) ON CONFLICT(scale, item_id) DO UPDATE SET "
-                "status = excluded.status, change_id = excluded.change_id, at = excluded.at, "
-                "belief = excluded.belief, "
-                "record = COALESCE(excluded.record, CASE WHEN excluded.belief = 'absent' THEN NULL "
-                "ELSE scale_state.record END)",
-                (scale, n, status, change_id, at, belief, rec))
+        if belief is None:
+            if status in _SUCCESS:
+                belief = "present"
+            elif status == "unknown":
+                belief = "unknown"
+            else:
+                prev = db.execute("SELECT belief FROM scale_state WHERE scale = ? AND item_id = ?",
+                                  (scale, n)).fetchone()
+                belief = prev["belief"] if prev else "unknown"
+        rec = json.dumps(_item_values(record), ensure_ascii=False) if record is not None else None
+        db.execute(
+            "INSERT INTO scale_state (scale, item_id, status, change_id, at, belief, record) "
+            "VALUES (?,?,?,?,?,?,?) ON CONFLICT(scale, item_id) DO UPDATE SET "
+            "status = excluded.status, change_id = excluded.change_id, at = excluded.at, "
+            "belief = excluded.belief, "
+            "record = COALESCE(excluded.record, CASE WHEN excluded.belief = 'absent' THEN NULL "
+            "ELSE scale_state.record END)",
+            (scale, n, status, change_id, at, belief, rec))
 
     def scale_states(self, item_id: int) -> dict[str, dict]:
         """Scale name to {"status", "change_id", "at", "belief", "record"}."""
@@ -633,16 +664,26 @@ class Catalog:
         """Keep the last record read from a scale, per id, and when. Exact text.
 
         covered_up_to says the read went through every id up to there, so an id at or
-        below it that is not in items now holds nothing. That is recorded too.
+        below it that is not in items now holds nothing. That is recorded too. A placeholder
+        is an empty slot, so the service leaves it out of items.
+
+        A read that shows nothing at a deleted item's id also confirms that this scale no
+        longer holds it, which is what frees the id for reuse.
         """
         held = {it.id: it for it in items}
         rows = [(scale, n, json.dumps(it.to_fields(), ensure_ascii=False), at) for n, it in held.items()]
+        empty: list[int] = []
         if covered_up_to is not None:
-            rows.extend((scale, n, "null", at) for n in range(MIN_ID, min(covered_up_to, MAX_ID) + 1) if n not in held)
+            empty = [n for n in range(MIN_ID, min(covered_up_to, MAX_ID) + 1) if n not in held]
+            rows.extend((scale, n, "null", at) for n in empty)
         with self._tx() as db:
             db.executemany(
                 "INSERT INTO scale_read (scale, item_id, record, at) VALUES (?,?,?,?) "
                 "ON CONFLICT(scale, item_id) DO UPDATE SET record = excluded.record, at = excluded.at", rows)
+            db.executemany(
+                "UPDATE scale_state SET belief = 'absent', record = NULL WHERE scale = ? AND item_id = ? "
+                "AND belief != 'absent' AND item_id IN (SELECT id FROM items WHERE deleted = 1)",
+                [(scale, n) for n in empty])
 
     def last_reads(self, item_id: int) -> dict[str, dict]:
         """Scale name to {"record": Item or None, "at"}. None means the read found nothing at this id."""
@@ -679,6 +720,31 @@ class Catalog:
                     (scale, r["id"], status, change_id, at, rec))
         return len(rows)
 
+    # ------------------------------------------- PLU changes not yet finished
+
+    def note_plu_move(self, scale: str, old: Item) -> None:
+        """The catalog's PLU changed, and this scale has not confirmed it, so it may still hold `old`."""
+        with self._tx() as db:
+            db.execute(
+                "INSERT INTO plu_moves (scale, item_id, old_plu, record, noted_at) VALUES (?,?,?,?,?) "
+                "ON CONFLICT(scale, item_id, old_plu) DO UPDATE SET record = excluded.record, noted_at = excluded.noted_at",
+                (scale, _check_id(old.id), old.plu, json.dumps(_item_values(old), ensure_ascii=False), _now()))
+
+    def plu_moves(self, item_id: int, scale: str) -> dict[str, Item]:
+        """Old PLU to old record, for what this scale may still hold at this id."""
+        return {r["old_plu"]: Item.from_fields(json.loads(r["record"])) for r in self._conn().execute(
+            "SELECT old_plu, record FROM plu_moves WHERE scale = ? AND item_id = ?", (scale, item_id))}
+
+    def clear_plu_moves(self, item_id: int, scale: str) -> None:
+        """This scale confirmed what the catalog holds at this id."""
+        with self._tx() as db:
+            db.execute("DELETE FROM plu_moves WHERE scale = ? AND item_id = ?", (scale, item_id))
+
+    def old_plus_in_use(self) -> dict[str, int]:
+        """Old PLU to its id, for every PLU some scale may still hold from an unfinished change."""
+        return {r["old_plu"]: r["item_id"] for r in self._conn().execute(
+            "SELECT DISTINCT old_plu, item_id FROM plu_moves ORDER BY noted_at")}
+
     # ---------------------------------------------------------- previews
 
     def save_preview(self, preview_id: str, payload: dict, created_at: str, expires_at: str) -> None:
@@ -697,18 +763,35 @@ class Catalog:
     def consume_preview(self, preview_id: str, change_id: str) -> bool:
         """True the first time only. False if already consumed or missing."""
         with self._tx() as db:
-            return db.execute("UPDATE previews SET consumed_by = ? WHERE preview_id = ? "
-                              "AND consumed_by IS NULL", (change_id, preview_id)).rowcount == 1
+            return self._consume(db, preview_id, change_id)
+
+    def start_change(self, preview_id: str, change_id: str, event: str, payload: dict, at: str) -> bool:
+        """Consume the preview and log the start in one transaction, so no reader can find a preview
+        that names a change with no log entry. False, with nothing written, if already consumed or missing."""
+        with self._tx() as db:
+            if not self._consume(db, preview_id, change_id):
+                return False
+            self._insert_log(db, change_id, event, payload, at)
+            return True
+
+    @staticmethod
+    def _consume(db: sqlite3.Connection, preview_id: str, change_id: str) -> bool:
+        return db.execute("UPDATE previews SET consumed_by = ? WHERE preview_id = ? "
+                          "AND consumed_by IS NULL", (change_id, preview_id)).rowcount == 1
 
     # --------------------------------------------------------- change log
 
     def append_log(self, change_id: str, event: str, payload: dict, at: str) -> None:
         """Append one entry. The log has no update and no delete, enforced by triggers."""
-        scale = payload.get("scale") if isinstance(payload, dict) else None
         with self._tx() as db:
-            db.execute("INSERT INTO change_log (change_id, event, payload, at, scale) VALUES (?,?,?,?,?)",
-                       (change_id, event, json.dumps(payload, ensure_ascii=False),
-                        at, scale if isinstance(scale, str) else None))
+            self._insert_log(db, change_id, event, payload, at)
+
+    @staticmethod
+    def _insert_log(db: sqlite3.Connection, change_id: str, event: str, payload: dict, at: str) -> None:
+        scale = payload.get("scale") if isinstance(payload, dict) else None
+        db.execute("INSERT INTO change_log (change_id, event, payload, at, scale) VALUES (?,?,?,?,?)",
+                   (change_id, event, json.dumps(payload, ensure_ascii=False),
+                    at, scale if isinstance(scale, str) else None))
 
     def read_log(self, change_id: str) -> list[dict]:
         """Oldest first."""

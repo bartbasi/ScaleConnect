@@ -87,7 +87,7 @@ Change(
     action: str,                   # "add", "edit" or "delete"
     target_plu: str | None = None, # edit and delete: which item, by PLU
     target_id: int | None = None,  # edit and delete: which item, by id
-    plu: str | None = None,        # add: required. edit: on hold, see below
+    plu: str | None = None,        # add: required. edit: optional, see "Changing a PLU"
     code: str | None = None,       # optional. Must equal the PLU
     description: str | None = None,# add: required. edit: optional
     price: str | Decimal | None = None,  # add: required. edit: optional. Never a float
@@ -101,10 +101,55 @@ Change.to_dict() -> dict
 Rules:
 
 - An edit gives `target_plu` or `target_id`, not both, and at least one field.
-- An edit can change only price and description today. Other fields of the record are never set by a caller.
-- **Changing a PLU or Code is on hold.** A preview gives the error `plu_edit_held`. Hard rule 7 says PLU and Code are the same number, and a Code change has not been proven safe on a scale. Until Bart decides, or a FRONT test proves it, staff must use ScaleLink for a PLU change.
+- An edit can change only price, description and PLU. Other fields of the record are never set by a caller.
+- Code always follows the PLU. A request where they differ gets `code_plu_mismatch`.
 - An add takes the lowest unused id from the catalog. Callers pick an id only through `replace_orphan_id`, which must be a recorded orphan and gives a warning that needs acknowledging.
 - A new item takes `sold_by`. All its other fields take the defaults.
+- PLUs 9001 to 9500 belong to placeholders. An add or edit that uses one, or an edit or delete that targets one, gets `reserved_plu`.
+
+### Changing a PLU
+
+`{"action": "edit", "target_plu": "4001", "plu": "4005"}` writes the same id with the new PLU and Code, and every other field as that scale holds it. Bart's check on November 2 showed that this works and that the old PLU stops working.
+
+- **Refused at preview:** a PLU another catalog item holds, or one a scale may still hold from an unfinished change (`duplicate_plu`), a PLU in 9001 to 9500 (`reserved_plu`), a bad PLU (`invalid_plu`), a Code that differs (`code_plu_mismatch`).
+- **Refused per scale, with no way to acknowledge it:** the new PLU on another id, or the old PLU on another id (`plu_on_other_id`), and a different product at the id (`different_product`). Field drift on the same product needs its token, as with any write. These checks read the whole table.
+- **Verified** means the id reads back as the new record, and neither the old PLU nor the new one is on another id of that scale. Otherwise it is `mismatch`.
+- **Landing on one scale and not another.** The catalog moves once any scale took it. Each other scale, including one the change left out or one with writes off, is noted as possibly still on the old record. On `unknown` or `mismatch` alone the catalog stays where it was.
+- **Retrying.** Repeat the same edit, or name the new PLU, such as `{"action": "edit", "target_plu": "4005", "plu": "4005"}`. The second form also works by `target_id`. A scale may hold the old record or the new PLU, and neither is a different product. A record with other values there still needs its token. Only those two PLUs get this, so any other PLU at the id stays a different product.
+- **Until it finishes,** a price or description edit is refused on the scale still on the old PLU, with a message saying to repeat the edit. A delete can still reach that scale. The old PLU cannot go to another item. A verified write, delete or reload on that scale ends it.
+- **Settling** with `take="catalog"` never changes a PLU on a scale, and refuses with `plu_edit_held`. Only an edit that names the PLU does.
+
+### Delete by placeholder
+
+A delete overwrites the record's id with a placeholder, because replacing an id removes the old PLU. No `E` message exists in this library, and none can be framed. Bart approved this on November 2.
+
+The placeholder for id N has Code and PLU `9000 + N`, description `UNUSED`, price `0.01`, an empty field 6, the default fields 7 to 12 and 14 to 20, and a new timestamp. `models.placeholder_record` builds it, and `models.is_placeholder` needs every field but the time to match.
+
+- **The steps are those of any write.** Identity, a read of the whole table, compare, write, wait, read the whole table back. Nothing is resent automatically.
+- **Compare.** A different product at the id is `different_product`, which nothing can acknowledge. The old PLU on another id, or the placeholder's PLU on another id, is `plu_on_other_id`. The same product with other values is `differs`, and needs its token, like any write. That includes a timestamp alone.
+- **Verified** means the id holds the placeholder and the old PLU is on no other id of that scale. Otherwise it is `mismatch`.
+- **A placeholder is an empty slot.** `compare_scales`, `read_scale_items`, `mark_orphans_from_read` and every write treat it as nothing being there. `items_read` still counts it, and the message says how many. It is not drift and not an orphan. It is never in the catalog, so never in search or the list. An add may write over one. An edit over one goes as a new item there.
+- **The catalog.** The item leaves the list once any scale took the placeholder. On `unknown` or `mismatch` alone it stays listed.
+- **The id.** A deleted item keeps its id until every configured scale has confirmed it, including one the change left out. A scale is confirmed by a `verified` delete, a verified reload, or any later read that shows a placeholder or nothing at that id. Then the id is free again, and the next add can take it.
+- **Trying again.** While a scale may still hold a deleted item, a delete can target it by PLU or id even though it has left the list. Use `scales` to name that scale.
+
+### Never leave a gap
+
+A gap in the ids may be what freezes a read. It is not proven, so a write treats it as dangerous. Before writing an id above a scale's last filled id plus one, the service fills the ids between with placeholders in the same send, in id order, and the scale's `message` says so. They are read back with the rest. If one does not read back as sent, the scale's status is `mismatch`, with an entry in `mismatches`. A gap already inside a table is left alone and named in the `message`. `reload_scale` closes it.
+
+### Reloading one scale
+
+`reload_scale` is for a person, through `scaleconnect reload`. The web page and MCP server do not call it. See `docs/CLI.md` for when to use it.
+
+It checks identity with `CX`, sends ids 1 to the highest id in the catalog (counting deleted items), then reads once, only if every record was accepted. No read comes first, so it works on a scale whose read would freeze. A live item goes exactly as the catalog holds it, and every other id gets a placeholder. It changes no catalog item, and it logs like a change, with the action `reload`. Rule 5: the item list is backed up as for any first write. What the scale holds is not, because that needs the read this exists to avoid, and `started` in the log says `scale_dump: not_taken_no_read_before_a_reload`. An ordinary first write to that scale later still saves the dump.
+
+```python
+ReloadResult(scale: str, status: str, ok: bool, message: str, change_id: str | None, top_id: int, accepted: int,
+             placeholders: tuple[int, ...], not_accepted: tuple[int, ...], differs_on_read: tuple[int, ...],
+             left_above: tuple[int, ...], duplicate_plus: tuple[str, ...])
+```
+
+`status` is `verified`, `mismatch`, `accepted_not_verified` (the read failed), `unknown` (the send stopped part way, and nothing was read), or one saying nothing went out: `unreachable`, `read_failed`, `wrong_scale`, `rejected` or `skipped_not_write_enabled`. `ok` is true only if every record reads back as sent and no PLU is left on two ids.
 
 ### Statuses
 
@@ -135,7 +180,7 @@ class ScaleStatus(StrEnum):
 | `wrong_scale` | The serial at that address does not match the config. Nothing was written | No |
 | `drift_refused` | The scale holds a different product, differs and nobody acknowledged it, or holds something in the way. Nothing was written. See `drift` | No |
 | `skipped_not_write_enabled` | Writes are off for this scale. Nothing was sent | No |
-| `not_available` | This operation is not available yet | No |
+| `not_available` | Nothing reports this now that delete is available. It stays in the list for clients that know it | No |
 
 A scale's status is the worst of its items, in this order: `wrong_scale`, `unknown`, `mismatch`, `rejected`, `drift_refused`, `read_failed`, `unreachable`, `not_available`, `skipped_not_write_enabled`, `accepted_not_verified`, `verified`.
 
@@ -152,8 +197,7 @@ Capabilities(add: bool, edit: bool, delete: bool, read: bool, verify: bool, note
 ```
 
 ```json
-{"add": true, "edit": true, "delete": false, "read": true, "verify": true,
- "notes": {"delete": "Not available yet. ..."}}
+{"add": true, "edit": true, "delete": true, "read": true, "verify": true, "notes": {}}
 ```
 
 Show `notes[...]` next to any control you hide or disable.
@@ -200,7 +244,7 @@ FieldDiff(before: str | None, after: str | None)
 | `kind` | Meaning | `before` and `after` | Can be acknowledged |
 |---|---|---|---|
 | `differs` | The same product, by PLU and Code, with other fields different from the catalog | catalog, scale | Yes |
-| `different_product` | The PLU or Code at that id differs from the catalog, so it is another product | catalog, scale | No. Only settling resolves it |
+| `different_product` | The PLU or Code at that id differs from the catalog, so it is another product | catalog, scale | No. Settling resolves it, or repeating a PLU change that has not finished there |
 | `plu_on_other_id` | The PLU to be written is on this scale under another id | none | No |
 | `id_occupied` | An add's id holds something on this scale, and it is not a recorded orphan | none | No |
 | `missing` | From `compare_scales` and `preview_settle_drift`. The scale holds nothing at an id the catalog lists | none | Not needed |
@@ -246,13 +290,15 @@ Warning codes:
 | `scale_not_targeted` | true | The preview names fewer than all configured scales |
 | `orphan_replaced` | true | This add replaces what a scale holds at a recorded orphan id |
 | `no_change` | false | The catalog already has these values. Applying still reads each scale and sends the record |
-| `delete_not_available` | false | Deletes are not available yet. Applying reports `not_available` |
+| `delete_placeholder` | true | This delete overwrites the id with a placeholder, so the old PLU stops working |
+| `plu_change` | true | This edit changes a PLU, so the old PLU stops working on the scales. Code follows it |
 | `scale_not_write_enabled` | false | This scale will report `skipped_not_write_enabled` |
 | `missing_on_scale` | false | With `read_scales`, the scale holds nothing at this id, so the record goes there as a new item |
+| `gap_filled` | false | With `read_scales`, this write would leave a gap on the scale named, so the ids named get placeholders in the same send. Without a read this is not known until apply |
 | `interrupted_change` | false | An earlier change on these items never finished. Apply will refuse until it is resolved |
 | `scale_read_failed` | false | With `read_scales`, this scale could not be read for the preview |
 
-Error codes: `invalid_change`, `invalid_action`, `item_not_found`, `duplicate_target`, `invalid_price`, `invalid_plu`, `invalid_code`, `code_plu_mismatch`, `plu_edit_held`, `duplicate_plu`, `invalid_id`, `no_free_id`, `invalid_description`, `invalid_field`, `unknown_scale`, `no_changes`, `no_scales`.
+Error codes: `invalid_change`, `invalid_action`, `item_not_found`, `duplicate_target`, `invalid_price`, `invalid_plu`, `invalid_code`, `code_plu_mismatch`, `reserved_plu`, `duplicate_plu`, `invalid_id`, `no_free_id`, `invalid_description`, `invalid_field`, `unknown_scale`, `no_changes`, `no_scales`. `delete_not_available` appears only if `DELETE_AVAILABLE` is turned off.
 
 `preview_settle_drift` adds the warning `other_scales_may_differ` (no acknowledgement), and the errors `no_drift`, `settle_read_failed`, `settle_not_possible` and `scale_not_write_enabled`.
 
@@ -366,6 +412,7 @@ class ScaleConnectService:
                                requested_by: str = "unknown") -> OrphanMarks
     def list_orphans(self) -> dict[int, list[str]]
     def mark_orphan(self, item_id: int, scale: str, note: str = "") -> None
+    def reload_scale(self, scale: str, *, requested_by: str = "unknown") -> ReloadResult
     def apply_running(self) -> bool
 ```
 
@@ -387,6 +434,7 @@ class ScaleConnectService:
 | `mark_orphans_from_read` | Yes: `CX` and `LP` on that scale. Never writes | `ApplyBusy`. `ValidationFailed` for an unknown scale or a bad id type |
 | `list_orphans` | No | Nothing |
 | `mark_orphan` | No | `CatalogError` for a bad id |
+| `reload_scale` | Yes: `CX`, the write messages, then `LP` once. Command line only | `ValidationFailed` for an unknown or not write enabled scale, or a catalog record that cannot be sent. `InterruptedChange`, `BackupFailed`, `LogFailed`, `ApplyBusy`, all with nothing sent |
 | `apply_running` | No | Nothing |
 
 `search_items` puts an exact PLU first, then PLUs that start with the query, then descriptions that hold the query, ignoring case. An empty query lists items up to the limit.
@@ -397,7 +445,7 @@ class ScaleConnectService:
 
 | Argument | What it allows |
 |---|---|
-| `acknowledge_warnings=True` | Every preview warning with `requires_ack`: a large price change, a subset of scales, a replaced orphan. Must be exactly `True` |
+| `acknowledge_warnings=True` | Every preview warning with `requires_ack`: a large price change, a subset of scales, a replaced orphan, a delete, a PLU change. Must be exactly `True` |
 | `acknowledge_drift=[token, ...]` | Writing to a scale whose fields differ on the same product, for these exact tokens. Tokens come from `Preview.drift` or `ScaleResult.drift`. It cannot allow a different product or a duplicate PLU |
 
 Previews do not read scales unless asked, so apply always checks. If apply finds drift nobody acknowledged, that scale reports `drift_refused` with the tokens, and nothing is written to it. The preview is then used up. Make a new preview, and pass the tokens to apply.
@@ -452,20 +500,22 @@ An add never takes an orphan id unless it names one in `replace_orphan_id`. If n
 
 ### What apply does
 
-`apply_change` raises, with nothing sent, for `PreviewNotFound`, `PreviewExpired`, `PreviewStale`, `PreviewAlreadyApplied`, `AcknowledgementRequired`, `ValidationFailed`, `InterruptedChange`, `BackupFailed`, `LogFailed` and `ApplyBusy`. After it starts sending it does not raise for scale or log problems. They appear in the record, and it continues to the next scale.
+The preview is used up and the start logged in one transaction. So `get_change_for_preview` gives either `None`, meaning nothing has been sent, or a change. If the log cannot be written, the preview stays unused. `apply_change` raises, with nothing sent, for `PreviewNotFound`, `PreviewExpired`, `PreviewStale`, `PreviewAlreadyApplied`, `AcknowledgementRequired`, `ValidationFailed`, `InterruptedChange`, `BackupFailed`, `LogFailed` and `ApplyBusy`. After it starts sending it does not raise for scale or log problems. They appear in the record, and it continues to the next scale.
 
 1. Takes the lock. Checks the preview exists, has not been used, has not expired, the catalog has not changed, the write flags are the same as at preview, warnings are acknowledged, every record is still valid, every add's id is still free, and no interrupted change touches these items.
 2. Saves the item list backup before the first write to each scale.
 3. Marks the preview used, and logs that the change started.
 4. For each targeted scale, one at a time, in config order. It logs each result as it comes, and a failure moves on to the next scale:
    1. **Identity.** Sends `CX`. A wrong serial sends nothing else.
-   2. **Read.** Sends `LP`, stopping once it has the highest id it needs. An add, or the first write to a scale, reads the whole table.
+   2. **Read.** Sends `LP`, stopping once it has the highest id it needs. An add, a delete, or the first write to a scale, reads the whole table.
    3. **Compare.** A different product, a duplicate PLU, an occupied id, or field drift nobody acknowledged refuses this whole scale.
    4. **Build.** The scale's own record with only the requested fields, plus one new timestamp. A record that fails validation is refused here.
    5. **Write.** `RI`, `bX01XX`, `GP` batches, `GPF0`. Each waits for the last reply, and each batch's reply is checked.
    6. **Read back.** Waits out the scale's busy gap of about 10 to 11 seconds. Compares all 20 fields as exact text.
    7. **No resend.** Nothing goes out twice on its own.
 5. Updates the catalog, and logs the finish.
+
+A read or `CX` that gets no reply says the scale may have frozen and may need a reboot. A read has frozen real scales. See `docs/PROTOCOL.md` section 3. Nothing keeps sending to a scale that stopped replying: a stall on an ordinary read ends it at once, and the read back stops at its window, or at once if blocks had started to come.
 
 How retries work: a connect that fails, at once or by timing out, is tried again up to `connect_attempts` times, and the wait doubles from `connect_retry_wait_seconds` up to 30 seconds. So is `CX` or the start of a read that gets dropped with no reply, which is another way a busy scale says no. With the defaults that is at least 65 seconds of real time, even if each refusal comes back at once. The read back keeps trying for `read_back_window_seconds`, 45 by default, also in real time. `load_config` warns if either covers under 15 seconds. Nothing is retried once a scale has stalled on an opening message or has answered.
 
@@ -508,7 +558,7 @@ Done by the service on every add and edit result. It also runs on the record bui
 | Price | Text or Decimal, never a float. More than 0, at most 999.99, exactly two decimals, no stray leading zeros | `invalid_price` |
 | PLU | Exactly 4 ASCII digits, not starting with 0 | `invalid_plu` |
 | Code | Exactly 4 ASCII digits, not starting with 0, and equal to the PLU | `invalid_code`, `code_plu_mismatch` |
-| PLU or Code change | On hold | `plu_edit_held` |
+| PLU change | Code follows it. Not in 9001 to 9500. See "Changing a PLU" | `code_plu_mismatch`, `reserved_plu` |
 | Duplicate | A new PLU must be free in the catalog. Each scale is checked at apply too | `duplicate_plu`, or `plu_on_other_id` drift |
 | Id | 1 to 500 | `invalid_id` |
 | Description | Not empty or blank. Printable ASCII only, so no TAB, CR or LF. At most `description_max_length`, 35 by default. A new value cannot start or end with a space | `invalid_description` |
@@ -516,7 +566,7 @@ Done by the service on every add and edit result. It also runs on the record bui
 | Other fields | Printable ASCII, at most 20 characters each. Callers cannot set them | `invalid_field` |
 | Same item twice | One preview may not target an item twice | `duplicate_target` |
 
-A PLU with a leading zero is refused because none of the 484 real items has one (they run from 1001 to 7262), and nobody knows what a scale does with one. An existing catalog item whose Code differs from its PLU cannot be edited until the hold is lifted.
+A PLU with a leading zero is refused because none of the 484 real items has one (they run from 1001 to 7262), and nobody knows what a scale does with one. An existing catalog item whose Code differs from its PLU can be edited only by an edit that gives a Code equal to the PLU.
 
 ## Exceptions (`scaleconnect.errors`)
 
@@ -590,9 +640,11 @@ class Catalog:
     def list_items(self, *, include_deleted=False) -> list[Item]    # by id
     def get_by_id(self, item_id: int, *, include_deleted=False) -> Item | None
     def get_by_plu(self, plu: str) -> Item | None
+    def deleted_item_still_held(self, *, plu: str | None = None, item_id: int | None = None) -> Item | None
     def search(self, query: str, limit: int = 50) -> list[Item]
     def free_ids(self, count: int, max_id: int = 500) -> list[int]
-    # Lowest unused ids, ascending, skipping live, reserved and orphan ids. May return fewer than count.
+    # Lowest unused ids, ascending, skipping live, reserved and orphan ids, and deleted items a scale may hold.
+    # May return fewer than count.
     def upsert_item(self, item: Item, *, replacing_orphan: bool = False) -> None
     def remove_item(self, item_id: int) -> None
     def import_items(self, items: Iterable[Item]) -> int            # seeding an empty catalog only
@@ -605,10 +657,20 @@ class Catalog:
     # What we last recorded and read for an item on each scale
     def record_scale_state(self, item_id: int, scale: str, status: str, change_id: str, at: str, *,
                            belief: str | None = None, record: Item | None = None) -> None
+    def record_scale_states(self, scale: str, rows: Iterable[tuple[int, str, str | None, Item | None]],
+                            change_id: str, at: str) -> None   # many at once, in one transaction
+
+    # PLU changes a scale has not confirmed. The table is added when an older catalog file is opened
+    def note_plu_move(self, scale: str, old: Item) -> None
+    def plu_moves(self, item_id: int, scale: str) -> dict[str, Item]   # old PLU to old record
+    def clear_plu_moves(self, item_id: int, scale: str) -> None
+    def old_plus_in_use(self) -> dict[str, int]                        # old PLU to its id
+
     def scale_states(self, item_id: int) -> dict[str, dict]
     # scale name to {"status", "change_id", "at", "belief", "record"}
     def record_scale_reads(self, scale: str, items: Iterable[Item], at: str, *, covered_up_to: int | None = None) -> None
-    # An id at or below covered_up_to that is not in items is recorded as holding nothing
+    # An id at or below covered_up_to that is not in items is recorded as holding nothing.
+    # If that id is a deleted item's, this scale's belief for it becomes absent
     def last_reads(self, item_id: int) -> dict[str, dict]   # scale name to {"record": Item or None, "at"}
 
     # Previews. Payload is a JSON safe dict the catalog does not interpret
@@ -659,7 +721,10 @@ scaleconnect changes [--limit N]
 scaleconnect mark-orphans --scale NAME [--id ID ...] [--note TEXT] [--who NAME]
 scaleconnect orphans
 scaleconnect resolve CHANGE_ID --note TEXT [--who NAME]
+scaleconnect reload --scale NAME --yes [--who NAME]
 ```
+
+`reload` overwrites ids 1 to N on that scale and prints a `ReloadResult`. It exits 2 without `--yes`, and 7 if `ok` is false.
 
 `settle` prints a `Preview`. Apply it with `apply`, as with any other. `preview` takes a JSON list of changes. On failure the output is `{"ok": false, "error": {"code": ..., "message": ...}}`. `preview` with errors prints the `Preview` and exits 3. `apply` prints the `ChangeRecord`.
 

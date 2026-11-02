@@ -143,8 +143,8 @@ def test_list_scales_says_what_it_knows_and_holds_no_address(make_env):
     env = make_env({"A": True, "B": False})
     data = Session(env).data("scale_list_scales")
     assert {s["name"]: s["write_enabled"] for s in data["scales"]} == {"A": True, "B": False}
-    assert data["capabilities"]["delete"] is False
-    assert "Not available yet" in data["summary"]
+    assert data["capabilities"]["delete"] is True
+    assert "Not available" not in data["summary"]
     dumped = json.dumps(data)
     assert "127.0.0.1" not in dumped and "TEST-A" not in dumped
     assert env.silent("A", "B")
@@ -534,14 +534,16 @@ def test_a_subset_of_scales_needs_acknowledging_and_can_never_be_a_success(env3)
 
 def test_a_status_hidden_by_a_worse_one_on_the_same_scale_still_gets_its_next_step():
     """A scale shows only its worst status. An edit that was only accepted must still be
-    flagged for a person to check when a delete in the same batch reports not_available."""
+    flagged for a person to check beside a record that reports not_available. Nothing reports
+    that now, but an old logged change can, and it must not send anyone to ScaleLink."""
     items = (ItemResult(1, "1001", "delete", "not_available"), ItemResult(2, "1002", "edit", "accepted_not_verified"))
     record = ChangeRecord(
         "c", "p", "x", False, "t", "t", "partial", False, (),
         (ScaleResult("A", "not_available", "", items=items),), "s", display="Partly done.",
     )
     data = _change_payload(record)
-    assert "check the scales" in data["next_step"] and "delete was not done" in data["next_step"]
+    assert "check the scales" in data["next_step"] and "was not done" in data["next_step"]
+    assert "ScaleLink" not in data["next_step"]
     assert data["success"] is False
 
 
@@ -586,7 +588,10 @@ def test_the_server_does_not_take_the_librarys_word_for_success(env):
         ({"action": "edit", "target_plu": "1001", "price": "1000.00"}, "invalid_price"),
         ({"action": "edit", "target_plu": "1001", "price": "9.9"}, "invalid_price"),
         ({"action": "edit", "target_plu": "1001", "price": "-1.00"}, "invalid_price"),
-        ({"action": "edit", "target_plu": "1001", "plu": "4444"}, "plu_edit_held"),
+        ({"action": "edit", "target_plu": "1001", "plu": "44444"}, "invalid_plu"),
+        ({"action": "edit", "target_plu": "1001", "plu": "4444", "code": "4445"}, "code_plu_mismatch"),
+        ({"action": "edit", "target_plu": "1001", "plu": "9001"}, "reserved_plu"),
+        ({"action": "edit", "target_plu": "1001", "plu": "1002"}, "duplicate_plu"),
         ({"action": "edit", "target_plu": "9999", "price": "1.00"}, "item_not_found"),
         ({"action": "edit", "target_plu": "1001"}, "invalid_change"),
         ({"action": "add", "plu": "123", "description": "X", "price": "1.00"}, "invalid_plu"),
@@ -655,24 +660,21 @@ def test_an_unknown_scale_or_empty_list_is_refused_with_nothing_sent(env):
 # ---------- delete ----------
 
 
-def test_delete_reports_not_available_with_a_plain_reason(env):
+def test_delete_needs_an_acknowledgement_and_then_writes_a_placeholder(env):
     session = Session(env)
     preview = session.preview([{"action": "delete", "target_plu": "1001"}])
-    assert [w["code"] for w in preview["warnings"]] == ["delete_not_available"]
-    assert "Deletes are not available yet" in preview["summary"]
-    result = session.apply(preview["preview_id"])
+    assert [w["code"] for w in preview["warnings"]] == ["delete_placeholder"]
+    refused = session.apply(preview["preview_id"])
+    assert refused.is_error and not env.fakes["A"].messages_of("GP")
+    result = session.apply(preview["preview_id"], acknowledge_warnings=True)
     data = result.structured_content
-    assert result.is_error
-    assert data["scale_statuses"] == {"A": "not_available"}
-    assert_not_called_a_success(data)
-    assert "Why not available: Not available yet." in data["summary"]
-    assert "ScaleLink" in data["next_step"]
-    assert not env.fakes["A"].messages_of("GP")
-    assert env.fakes["A"].item(1) is not None
-    assert env.catalog.get_by_id(1) is not None
+    assert not result.is_error
+    assert data["scale_statuses"] == {"A": "verified"}
+    assert env.fakes["A"].item(1)[3:5] == ("UNUSED", "0.01")
+    assert env.catalog.get_by_id(1) is None
 
 
-def test_a_delete_in_a_batch_is_named_and_the_batch_is_not_a_success(env):
+def test_a_delete_in_a_batch_goes_with_the_edit(env):
     session = Session(env)
     preview = session.preview(
         [
@@ -680,12 +682,11 @@ def test_a_delete_in_a_batch_is_named_and_the_batch_is_not_a_success(env):
             {"action": "edit", "target_plu": "1002", "price": "21.00"},
         ]
     )
-    result = session.apply(preview["preview_id"])
+    result = session.apply(preview["preview_id"], acknowledge_warnings=True)
     data = result.structured_content
-    assert result.is_error
-    assert_not_called_a_success(data)
-    assert data["batch_partly_failed"] is True
-    assert {row["plu"]: row["scales"]["A"]["status"] for row in data["items"]} == {"1001": "not_available", "1002": "verified"}
+    assert not result.is_error
+    assert data["batch_partly_failed"] is False
+    assert {row["plu"]: row["scales"]["A"]["status"] for row in data["items"]} == {"1001": "verified", "1002": "verified"}
     assert held_price(env.fakes["A"], 2) == "21.00"
 
 

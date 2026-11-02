@@ -52,10 +52,47 @@ If the new price is far from the old price, the page asks you to confirm. Look a
 
 The PLU cannot already be in use.
 
-## What you cannot do here yet
+## Change a PLU
 
-- You cannot delete an item. Ask Bart.
-- You cannot change a PLU. Ask Bart.
+Think before you change a PLU. Staff look items up by PLU, and the old number stops working.
+
+1. Find the item.
+2. Tap "Change this item".
+3. Type the new PLU in the PLU box. It is 4 digits.
+4. Tap "Review the change".
+5. Read the screen. It shows the old PLU and the new PLU. It says the old PLU stops working on the scales once this runs.
+6. Tick the box that says you understand.
+7. Tap "Send to the scales".
+8. Wait for the result. Read the line for each scale.
+
+The code on the item always follows the PLU. You do not set it.
+
+The new PLU must be 4 digits and cannot already be used by another item. The numbers 9001 to 9500 are set aside and cannot be used.
+
+If one scale did not take the change, the result says so and shows "Repeat that edit". Look at each scale first. Then tap "Repeat that edit" and check the screen. Until every scale says "changed and checked", do not give the old PLU or the new PLU to another item. If the screen says a scale is still on the old PLU and tells you to repeat that edit, open "Recent changes", open that change, and tap "Repeat that edit".
+
+## Delete an item
+
+1. Find the item.
+2. Scroll down. Tap "Delete this item".
+3. Read the screen. It shows the PLU, the name and the price of the item you are about to delete. Make sure it is the right one.
+4. The screen says the PLU will stop working on the scales. Tick the box that says you understand.
+5. Tap "Delete from the scales".
+6. Wait for the result. Read the line for each scale.
+
+If it is the wrong item, tap "Do not delete. Go back." Nothing has been sent yet.
+
+After a delete, the old PLU does nothing on the scales. The page no longer finds the item. A scale that was not changed still has the old item until the result says "changed and checked" for it.
+
+## What "UNUSED" means
+
+A deleted item leaves an empty slot on each scale. The slot is named UNUSED. It has a PLU from 9001 to 9500 and a price of 0.01. If you ever see UNUSED on a scale or a label, it is an empty slot, not a real product. Do not sell it. Do not try to change it. Tell Bart if you see it on a label.
+
+## What you cannot do here
+
+- You cannot change a scale's settings, units or calibration.
+- You cannot change a PLU to a number another item uses.
+- If something looks wrong with a delete or a PLU change, ask Bart.
 
 ## What each result means
 
@@ -73,7 +110,10 @@ You see one line for each scale.
 | This is not the scale it should be | Nothing was sent. | Tell Bart. |
 | The scale holds something different from our list | Nothing was sent. | Tell Bart. Do not force it. |
 | Changes are turned off for this scale | Nothing was sent to this scale. | Tell Bart. That scale still has the old price. |
-| Not available yet | That action does not work yet. | Ask Bart. |
+| This action is not available | Nothing was sent. | Ask Bart. |
+| An earlier PLU change did not finish on this scale | Nothing was sent. The scale is still on the old PLU. | Repeat that earlier edit. See "Change a PLU". |
+| This scale already has that PLU on a different item | Nothing was sent. | Tell Bart. Do not force it. |
+| The scale did not answer. It may need a reboot. | The scale may have frozen. A reboot means turning it off and on again. | Tell Bart. See below. |
 
 At the top you see one line for the whole change.
 
@@ -92,6 +132,20 @@ Never tell a customer a price is changed until every scale says "changed and che
 5. Tell Bart what you saw. Say which scale.
 
 If one scale says "could not connect", wait a minute. A scale can be busy for about 10 seconds after a change.
+
+## If a scale may need a reboot
+
+Sometimes the page says: "The scale did not answer. It may need a reboot. Tell Bart."
+
+This means the scale stopped answering the page. It may have frozen. It can still weigh while it is frozen.
+
+1. Do not keep trying. Do not send the change again and again.
+2. Tell Bart which scale it was.
+3. Bart decides whether to turn the scale off and on, and whether to reload its items.
+
+Nothing was changed on a scale that did not answer, unless the line for that scale says otherwise. Check the price on the scale display.
+
+For Bart: the reload command is in `docs/CLI.md`.
 
 Never touch the scale's calibration or settings. ScaleConnect does not change them.
 

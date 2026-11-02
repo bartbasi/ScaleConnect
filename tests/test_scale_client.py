@@ -308,18 +308,6 @@ def test_a_text_true_does_not_enable_writes(fake_scale):
     assert fake_scale.nothing_received
 
 
-def test_delete_is_not_available_and_sends_nothing(fake_scale):
-    rep = client(fake_scale).delete_items([make_item(1)])
-    assert rep.status == ScaleStatus.NOT_AVAILABLE
-    assert fake_scale.nothing_received
-
-
-def test_delete_on_a_scale_that_is_not_write_enabled_sends_nothing(fake_scale):
-    with pytest.raises(NotWriteEnabled):
-        client(fake_scale, write_enabled=False).delete_items([make_item(1)])
-    assert fake_scale.nothing_received
-
-
 @pytest.mark.parametrize("bad_id", [0, 501, 1000, -1])
 def test_ids_outside_1_to_500_never_go_out(fake_scale, bad_id):
     with pytest.raises(ProtocolError):

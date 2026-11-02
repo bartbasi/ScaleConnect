@@ -353,6 +353,33 @@ def test_a_running_change_is_not_called_interrupted_or_stopped(make_web):
     assert web.client.get("/api/item/1001").json()["sending_now"] is False
 
 
+def test_a_send_is_not_called_finished_while_the_job_still_counts_as_busy(make_web):
+    """The library logs the finish before the job ends. A client told finished must not then see sending_now."""
+    web = make_web({"A": True})
+    gate, returned = threading.Event(), threading.Event()
+    real = web.env.svc.apply_change
+
+    def slow_to_return(*a, **k):
+        record = real(*a, **k)
+        returned.set()
+        assert gate.wait(20)
+        return record
+
+    web.env.svc.apply_change = slow_to_return
+    web.login()
+    p = web.preview(EDIT).json()
+    assert web.send(p["preview_id"]).status_code == 200
+    assert returned.wait(20)
+    assert web.env.catalog.load_preview(p["preview_id"])["consumed_by"]
+    d = web.client.get(f"/api/send/{p['preview_id']}").json()
+    assert d["state"] == "running" and d["success"] is False and d["outcome"] == "in_progress"
+    assert web.client.get("/api/item/1001").json()["sending_now"] is True
+    gate.set()
+    d = web.wait_finished(p["preview_id"])
+    assert d["state"] == "finished" and d["success"] is True
+    assert web.client.get("/api/item/1001").json()["sending_now"] is False
+
+
 def test_settle_and_orphan_screens_are_reachable_from_the_page():
     from pathlib import Path
 

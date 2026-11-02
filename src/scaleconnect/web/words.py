@@ -25,7 +25,7 @@ SCALE_WORDS: dict[str, tuple[str, str]] = {
     "wrong_scale": ("this is not the scale it should be. Nothing was sent.", BAD),
     "drift_refused": ("the scale holds something different from our list. Nothing was sent.", BAD),
     "skipped_not_write_enabled": ("not changed. Changes are turned off for this scale.", WARN),
-    "not_available": ("not available yet. Nothing was sent.", BAD),
+    "not_available": ("this action is not available. Nothing was sent.", BAD),
     "not_sent": ("not sent. An earlier problem on this scale stopped it.", BAD),
     "seed": ("loaded from the starting list. It has not been read from the scale yet.", WARN),
 }
@@ -52,11 +52,62 @@ def _held_text(item: Item | None) -> str | None:
     return f"{item.description}, ${item.price}"
 
 
+REBOOT_LINE = "The scale did not answer. It may need a reboot. Tell Bart."
+
+
+def may_need_reboot(message: Any) -> bool:
+    """The library says a read with no reply may mean the scale froze and needs a reboot."""
+    return isinstance(message, str) and "reboot" in message.lower()
+
+
+def _get(drift: Any, name: str) -> Any:
+    return drift.get(name) if isinstance(drift, dict) else getattr(drift, name, None)
+
+
+def is_unfinished_move(drift: Any) -> bool:
+    """The scale still holds the old PLU because an earlier PLU change did not finish there."""
+    return _get(drift, "kind") == "different_product" and "repeat that edit" in str(_get(drift, "message") or "").lower()
+
+
+def is_plu_elsewhere(drift: Any) -> bool:
+    """The scale holds a PLU this change needs under another item."""
+    return _get(drift, "kind") == "plu_on_other_id"
+
+
+def drift_words(drift: Any) -> dict[str, str] | None:
+    """Plain words for a drift staff cannot override. None means the library's own message will do."""
+    scale = _get(drift, "scale")
+    if is_unfinished_move(drift):
+        held = _get(drift, "held")
+        old = held.get("plu") if isinstance(held, dict) else getattr(held, "plu", None)
+        return {
+            "plain": f"{scale} still has the old PLU{' ' + str(old) if old else ''}. An earlier PLU change did not finish there.",
+            "blocked": "This scale is still on the old PLU from an earlier change.",
+            "more": "Repeat that edit to finish it. Open Recent changes, open that change, and tap Repeat that edit.",
+        }
+    if is_plu_elsewhere(drift):
+        plu = _get(drift, "plu")
+        return {
+            "plain": f"{scale} already has PLU{' ' + str(plu) if plu else ''} on a different item.",
+            "blocked": "This scale already has that PLU on a different item. It cannot be sent from this page.",
+            "more": "Call Bart.",
+        }
+    return None
+
+
 def scale_row(result: ScaleResult) -> dict[str, Any]:
     """One finished scale as a line for staff."""
     words, severity = status_words(result.status)
     now: str | None = None
-    if result.status == "drift_refused" and any(is_different_product(d) for d in result.drift):
+    refused_unfinished = result.status == "drift_refused" and any(is_unfinished_move(d) for d in result.drift)
+    refused_elsewhere = result.status == "drift_refused" and any(is_plu_elsewhere(d) for d in result.drift)
+    if refused_unfinished:
+        words = "an earlier PLU change did not finish on this scale. Nothing was sent. Repeat that edit to finish it."
+        severity = BAD
+    elif refused_elsewhere:
+        words = "this scale already has that PLU on a different item. Nothing was sent. Call Bart."
+        severity = BAD
+    elif result.status == "drift_refused" and any(is_different_product(d) for d in result.drift):
         words = "this scale holds a different product at this number. Nothing was sent. Call Bart."
         severity = BAD
     held = None
@@ -64,7 +115,9 @@ def scale_row(result: ScaleResult) -> dict[str, Any]:
         if drift.held is not None:
             held = drift.held
             break
-    if result.status == "drift_refused" and any(is_different_product(d) for d in result.drift):
+    if refused_unfinished:
+        now = "Open Recent changes, open that change, and tap Repeat that edit."
+    elif refused_elsewhere or (result.status == "drift_refused" and any(is_different_product(d) for d in result.drift)):
         now = "Do not try to force this. Call Bart."
     elif result.status in ("mismatch", "drift_refused") and held is not None:
         now = f"The scale shows: {_held_text(held)}."
@@ -80,7 +133,28 @@ def scale_row(result: ScaleResult) -> dict[str, Any]:
         "state": "done",
         "now": now,
         "message": result.message,
+        "reboot": may_need_reboot(result.message),
         "drift_tokens": [d.ack_token for d in result.drift if d.ack_token],
+    }
+
+
+READ_WORDS = {
+    "unreachable": "could not connect.",
+    "read_failed": "could not be read.",
+    "wrong_scale": "this is not the scale it should be.",
+    "not_contacted": "was not read.",
+}
+
+
+def read_row(scale: str, status: str, message: str) -> dict[str, Any]:
+    """One scale after a read now. A good read needs no words here: the item page shows what was read."""
+    if status == "read":
+        return {"scale": scale, "status": status, "text": f"{scale}: read.", "severity": OK, "reboot": False}
+    reboot = may_need_reboot(message)
+    severity = WARN if status == "not_contacted" else BAD
+    return {
+        "scale": scale, "status": status, "severity": severity, "reboot": reboot,
+        "text": f"{scale}: {READ_WORDS.get(status, 'could not be read.')}",
     }
 
 
@@ -89,7 +163,7 @@ def pending_row(scale: str, working: bool) -> dict[str, Any]:
     return {
         "scale": scale, "status": "working" if working else "waiting", "text": text,
         "severity": WORKING, "state": "working" if working else "waiting",
-        "now": None, "message": "", "drift_tokens": [],
+        "now": None, "message": "", "reboot": False, "drift_tokens": [],
     }
 
 
@@ -98,7 +172,7 @@ def missing_row(scale: str) -> dict[str, Any]:
         "scale": scale, "status": "no_result",
         "text": f"{scale}: no result was recorded. Look at the scale.",
         "severity": BAD, "state": "done", "now": "What is on the scale now is not known.",
-        "message": "", "drift_tokens": [],
+        "message": "", "reboot": False, "drift_tokens": [],
     }
 
 
@@ -106,7 +180,7 @@ def not_touched_row(scale: str) -> dict[str, Any]:
     return {
         "scale": scale, "status": "not_touched",
         "text": f"{scale}: not part of this change. It was not touched.",
-        "severity": WARN, "state": "done", "now": None, "message": "", "drift_tokens": [],
+        "severity": WARN, "state": "done", "now": None, "message": "", "reboot": False, "drift_tokens": [],
     }
 
 
@@ -203,6 +277,46 @@ def normalize_price(value: Any) -> tuple[str | None, str | None]:
     except InvalidOperation:
         return None, "Type the price as a number such as 9.99."
     return f"{price:.2f}", None
+
+
+_PLU_IN_TEXT = re.compile(r"\bPLU (\d{4})\b")
+
+
+def plain_error(error: dict[str, Any]) -> dict[str, Any]:
+    """Staff words for the refusals that come with a PLU. Other errors keep the library's own message."""
+    code = error.get("code")
+    message = str(error.get("message") or "")
+    field = error.get("field")
+    found = _PLU_IN_TEXT.search(message)
+    plu = found.group(1) if found else None
+    text: str | None = None
+    if code == "reserved_plu":
+        if field in ("target_plu", "target_id"):
+            text = "That number is set aside for an empty slot on the scales. It is not a real item, so it cannot be changed or deleted."
+        else:
+            text = "The numbers 9001 to 9500 are set aside for empty slots on the scales. Pick a different PLU."
+    elif code == "code_plu_mismatch":
+        text = "The PLU and the code must be the same number. Do not send this. Tell Bart."
+    elif code == "duplicate_plu":
+        which = f"PLU {plu}" if plu else "That PLU"
+        if "not finished" in message:
+            text = (f"{which} may still be in use on a scale, because an earlier PLU change did not finish. "
+                    "Finish that change first, or pick a different PLU.")
+        else:
+            text = f"{which} is already used by another item. Pick a different PLU."
+    elif code == "plu_on_other_id":
+        text = "A scale already has that PLU on a different item. Call Bart."
+    elif code == "plu_edit_held":
+        text = "Settling cannot change a PLU on a scale. To change a PLU, use Change this item. Or ask Bart."
+    elif code == "delete_not_available":
+        text = "Deleting is not available right now. Ask Bart."
+    if text is None:
+        return error
+    return {**error, "message": text}
+
+
+def plain_errors(errors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [plain_error(e) for e in errors]
 
 
 def item_card(item: Item) -> dict[str, str | int]:

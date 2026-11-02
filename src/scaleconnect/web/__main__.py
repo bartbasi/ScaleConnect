@@ -17,9 +17,9 @@ from .app import create_app
 from .security import config_mode_problem, listen_host_problem
 
 
-# The library holds PLU edits (plu_edit_held). When Bart or a FRONT test lifts the hold,
-# change this to True. The edit screen then lets staff change the PLU.
-PLU_EDIT_ENABLED = False
+# The edit screen lets staff change the PLU. Code always follows the PLU, so the page never
+# shows Code as a field. The library still checks every PLU change and has the last word.
+PLU_EDIT_ENABLED = True
 
 
 def main(argv: list[str] | None = None) -> int:

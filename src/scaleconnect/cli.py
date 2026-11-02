@@ -42,7 +42,7 @@ def _default_who() -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = _Parser(prog="scaleconnect", description="Add and edit items on the scales.")
+    parser = _Parser(prog="scaleconnect", description="Add, edit and delete items on the scales.")
     parser.add_argument("--config", help="path to config.toml")
     commands = parser.add_subparsers(dest="command", required=True, parser_class=_Parser)
 
@@ -107,6 +107,16 @@ def build_parser() -> argparse.ArgumentParser:
     resolve.add_argument("change_id")
     resolve.add_argument("--note", required=True)
     resolve.add_argument("--who", help="who is asking")
+
+    reload_help = (
+        "overwrite ids 1 to N on one scale with the catalog, where N is the highest id in the catalog. "
+        "Whatever that scale holds at those ids is replaced. Deleted ids get placeholders. No read comes first. "
+        "This is the repair for a frozen scale, a scale fresh from a reset, or a scale whose ids differ from the catalog"
+    )
+    reload = commands.add_parser("reload", help=reload_help, description=reload_help)
+    reload.add_argument("--scale", required=True)
+    reload.add_argument("--yes", action="store_true", help="yes, overwrite ids 1 to N on this scale. Refused without it")
+    reload.add_argument("--who", help="who is asking")
     return parser
 
 
@@ -129,6 +139,10 @@ def _read_changes(args: argparse.Namespace) -> Any:
 
 
 def _run(args: argparse.Namespace) -> int:
+    if args.command == "reload" and not args.yes:
+        message = "Refused, and nothing was sent. A reload overwrites ids 1 to N on that scale. Run it again with the yes flag if that is what you want."
+        _emit({"ok": False, "error": {"code": "usage", "message": message}})
+        return EXIT_USAGE
     service = ScaleConnectService.open(args.config)
     try:
         if args.command == "capabilities":
@@ -182,6 +196,10 @@ def _run(args: argparse.Namespace) -> int:
             _emit({str(item_id): names for item_id, names in service.list_orphans().items()})
         elif args.command == "resolve":
             _emit(service.resolve_interrupted_change(args.change_id, args.note, requested_by=args.who or _default_who()).to_dict())
+        elif args.command == "reload":
+            result = service.reload_scale(args.scale, requested_by=args.who or _default_who())
+            _emit(result.to_dict())
+            return EXIT_OK if result.ok else EXIT_NOT_SUCCESS
         return EXIT_OK
     finally:
         service.close()

@@ -112,46 +112,45 @@ def test_the_catalog_gets_the_time_that_was_sent(env):
     assert env.catalog.get_by_id(1).timestamp == env.fakes["A"].item(1)[12]
 
 
-def test_delete_is_not_available_and_nothing_is_sent(env3):
-    rec = env3.change([{"action": "delete", "target_plu": "1002"}])
-    assert env3.statuses(rec) == {n: "not_available" for n in "ABC"}
-    assert not rec.success and rec.outcome == "failed"
-    assert env3.silent("A", "B", "C")
-    assert env3.catalog.get_by_plu("1002") is not None
-    assert rec.scale_results[0].items[0].status == "not_available"
+def test_delete_overwrites_the_id_with_a_placeholder_on_every_scale(env3):
+    rec = env3.change([{"action": "delete", "target_plu": "1002"}], ack=True)
+    assert env3.statuses(rec) == {n: "verified" for n in "ABC"}
+    assert rec.success and rec.outcome == "success"
+    assert env3.catalog.get_by_plu("1002") is None
+    for fake in env3.fakes.values():
+        assert fake.item(2)[1:5] == ("9002", "9002", "UNUSED", "0.01")
 
 
-def test_delete_preview_warns_that_it_is_not_available(env):
+def test_delete_preview_needs_an_acknowledgement(env):
     p = env.preview([{"action": "delete", "target_plu": "1002"}])
-    assert [w.code for w in p.warnings] == ["delete_not_available"]
+    assert [(w.code, w.requires_ack) for w in p.warnings] == [("delete_placeholder", True)]
     assert p.differences[0].action == "delete" and p.differences[0].after is None
+    with pytest.raises(errors.AcknowledgementRequired):
+        env.svc.apply_change(p.preview_id)
+    assert env.silent("A")
 
 
-def test_a_mixed_preview_sends_the_edit_and_reports_the_delete_not_available(env):
+def test_a_mixed_preview_sends_the_edit_and_the_delete_in_one_session(env):
     rec = env.change([
         {"action": "edit", "target_plu": "1001", "price": "10.10"},
         {"action": "delete", "target_plu": "1002"},
-    ])
+    ], ack=True)
     items = {i.action: i.status for i in rec.scale_results[0].items}
-    assert items == {"edit": "verified", "delete": "not_available"}
+    assert items == {"edit": "verified", "delete": "verified"}
     assert price_on(env.fakes["A"]) == "10.10"
-    assert gp_ids(env.fakes["A"]) == [1]
+    assert gp_ids(env.fakes["A"]) == [1, 2]
 
 
-def test_capabilities_say_delete_is_not_available_and_reads_are(env):
+def test_capabilities_say_delete_and_reads_are_available(env):
     caps = env.svc.capabilities().to_dict()
     assert caps["add"] and caps["edit"] and caps["read"] and caps["verify"]
-    assert caps["delete"] is False
-    assert caps["notes"]["delete"]
+    assert caps["delete"] is True
+    assert "delete" not in caps["notes"]
 
 
-def test_plu_and_code_changes_are_held(env):
-    for change in (
-        {"action": "edit", "target_plu": "1001", "plu": "1999"},
-        {"action": "edit", "target_plu": "1001", "code": "1999"},
-    ):
-        p = env.svc.preview_changes([change])
-        assert not p.ok and p.errors[0].code in ("plu_edit_held", "code_plu_mismatch")
+def test_a_code_alone_cannot_part_from_the_plu(env):
+    p = env.svc.preview_changes([{"action": "edit", "target_plu": "1001", "code": "1999"}])
+    assert not p.ok and p.errors[0].code == "code_plu_mismatch"
     assert env.silent("A")
 
 
@@ -307,7 +306,7 @@ def test_write_enabled_block_covers_adds_edits_and_deletes(make_env):
         {"action": "add", "plu": "1234", "description": "New", "price": "1.00"},
         {"action": "edit", "target_plu": "1001", "price": "10.10"},
         {"action": "delete", "target_plu": "1002"},
-    ])
+    ], ack=True)
     assert env.silent("A")
 
 
@@ -407,7 +406,7 @@ BAD_CHANGES = [
     ("plu 5 digits", {"action": "add", "plu": "12345", "description": "X", "price": "1.00"}, "invalid_plu"),
     ("plu letters", {"action": "add", "plu": "12a4", "description": "X", "price": "1.00"}, "invalid_plu"),
     ("plu with space", {"action": "add", "plu": "12 4", "description": "X", "price": "1.00"}, "invalid_plu"),
-    ("edit plu is held", {"action": "edit", "target_plu": "1001", "plu": "10011"}, "plu_edit_held"),
+    ("edit plu 5 digits", {"action": "edit", "target_plu": "1001", "plu": "10011"}, "invalid_plu"),
     ("code differs from plu", {"action": "add", "plu": "1234", "code": "1235", "description": "X", "price": "1.00"},
      "code_plu_mismatch"),
     ("duplicate plu on add", {"action": "add", "plu": "1002", "description": "X", "price": "1.00"}, "duplicate_plu"),
@@ -758,11 +757,11 @@ def test_a_decimal_price_is_accepted_and_sent_as_text(env):
 def test_the_whole_flow_sends_only_known_messages(env3):
     env3.change([{"action": "add", "plu": "1500", "description": "One", "price": "1.00"}])
     env3.change([{"action": "edit", "target_plu": "1500", "price": "1.25"}])
-    env3.change([{"action": "delete", "target_plu": "1500"}])
+    env3.change([{"action": "delete", "target_plu": "1500"}], ack=True)
     for fake in env3.fakes.values():
         assert set(fake.kinds()) <= KNOWN_KINDS
         assert {"CX", "LP", "RI", "bX01XX", "GP", "GPF0"} <= set(fake.kinds())
-        assert fake.kinds().count("RI") == 2  # the delete sent nothing
-        assert fake.item(4)[4] == "1.25"
+        assert fake.kinds().count("RI") == 3  # a delete is a write like any other
+        assert fake.item(4)[3:5] == ("UNUSED", "0.01")
         assert not any(m.raw.startswith((b"LG", b"E")) for m in fake.messages)
         fake.assert_one_at_a_time()

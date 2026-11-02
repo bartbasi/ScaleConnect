@@ -273,12 +273,13 @@ def test_normalize_price_bad(value):
     assert price is None and why
 
 
-def test_plu_edit_is_held_by_the_library_and_the_page_says_so(web):
+def test_create_app_leaves_the_plu_screen_off_unless_asked_and_a_preview_sends_nothing(web):
+    # The start up file asks for it (see test_web_delete_plu). The library checks every PLU change either way.
     web.login()
     state = web.client.get("/api/state").json()
     assert state["plu_edit_enabled"] is False
     p = web.preview([{"action": "edit", "target_plu": "1001", "plu": "1999"}]).json()
-    assert not p["ok"] and p["errors"][0]["code"] == "plu_edit_held"
+    assert p["ok"]
     assert web.env.silent("A")
 
 
@@ -318,22 +319,26 @@ def test_page_cannot_send_fields_it_should_not(web):
     assert web.preview([]).json()["ok"] is False
 
 
-def test_delete_is_not_offered_when_the_library_says_no(web):
+def test_delete_is_not_offered_when_the_library_says_no(web, monkeypatch):
+    monkeypatch.setattr(scale_module, "DELETE_AVAILABLE", False)
     state = web.client.get("/api/state").json()
     assert state["capabilities"]["delete"] is False
-    assert "not available" in state["delete_note"].lower()
+    assert state["delete_note"] == "Deleting is not available right now. Ask Bart."
+    assert "yet" not in state["delete_note"]
 
 
-def test_delete_is_offered_when_the_library_says_yes(web, monkeypatch):
-    monkeypatch.setattr(scale_module, "DELETE_AVAILABLE", True)
+def test_delete_is_offered_when_the_library_says_yes(web):
     assert web.client.get("/api/state").json()["capabilities"]["delete"] is True
 
 
-def test_a_delete_preview_says_not_available_and_sends_nothing(web):
+def test_a_delete_preview_needs_an_acknowledgement_and_sends_nothing_yet(web):
     web.login()
     p = web.preview([{"action": "delete", "target_plu": "1002"}]).json()
     assert p["ok"]
-    assert any(w["code"] == "delete_not_available" for w in p["warnings"])
+    assert any(w["code"] == "delete_placeholder" and w["requires_ack"] for w in p["warnings"])
+    r = web.send(p["preview_id"], warnings=False)
+    assert r.status_code == 400 and r.json()["error"]["code"] == "acknowledgement_required"
+    assert web.env.writes("A") == []
 
 
 # ---------------------------------------------------------------- review: warnings and drift

@@ -17,8 +17,9 @@ It is for a small store that runs these scales and wants to update prices and it
 Read this first.
 
 - ScaleConnect has not yet completed a full run on a real scale through this library. The library has been tested against a fake scale, and the message formats come from captures and tests on one test scale.
-- Delete is not available yet. The delete message has not been proven, so the library reports `not_available` for any delete. Use ScaleLink to delete items.
-- Changing a PLU or Code is on hold. Use ScaleLink for that too.
+- Delete works by overwriting the item's id with an empty placeholder named UNUSED. The old PLU stops working on the scales. It was checked by hand on the test scale.
+- An edit can change the PLU. Code always follows it, because PLU and Code are the same 4 digit number. The old PLU stops working. This was also checked by hand on the test scale.
+- The web page offers add, edit, PLU change and delete.
 - Reading items back from a scale works in the lab on one test scale. Nobody has checked yet what the scale display and printed labels show for every case.
 - Only scales marked write enabled in your config can be changed. Everything else is read only or left alone.
 - License: not chosen yet. The owner decides.
@@ -27,7 +28,7 @@ The lead can update this section as things change.
 
 ## What it does
 
-- Add a new item, or change the price or description of an item.
+- Add a new item, change the price, description or PLU of an item, or delete an item.
 - Send each change to every configured scale, one scale at a time, and show a result for each scale.
 - Read each scale first and compare, so a scale that differs from ScaleConnect's list is shown to you before anything is written.
 - Read the item back after writing, so a result says `verified` only when the scale really holds the new values.

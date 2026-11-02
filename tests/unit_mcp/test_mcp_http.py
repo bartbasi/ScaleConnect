@@ -492,3 +492,52 @@ def test_end_to_end_over_real_stdio(tmp_path, template_root):
     finally:
         fake.stop()
         fake.assert_clean()
+
+
+def test_a_delete_and_a_plu_change_end_to_end_over_real_stdio(tmp_path, template_root):
+    """The real process and the SDK's own client: preview, a refusal without the acknowledgement,
+    then apply. The fake scale has to show the result, and no E message may reach it."""
+    fake = FakeScale(post_write_refusal_seconds=0.0, serial="TEST-A").start()
+    try:
+        fake.preload(*[tuple(i.to_fields()) for i in SEED])
+        config = write_config(seeded_folder(tmp_path, template_root), {"A": fake})
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "scaleconnect.mcp_server", "--stdio", "--config", str(config)],
+            env=child_env(),
+        )
+
+        async def preview_and_apply(client, change):
+            preview = await client.call_tool("scale_preview_changes", {"changes": [change]})
+            assert not preview.is_error, preview.content
+            data = preview.structured_content
+            refused = await client.call_tool("scale_apply_changes", {"preview_id": data["preview_id"]})
+            assert refused.is_error and refused.structured_content["error"]["code"] == "acknowledgement_required"
+            applied = await client.call_tool("scale_apply_changes", {"preview_id": data["preview_id"], "acknowledge_warnings": True})
+            assert not applied.is_error, applied.content
+            return data, applied.structured_content
+
+        async def go():
+            async with Client(params) as client:
+                deleted = await preview_and_apply(client, {"action": "delete", "target_plu": "1002"})
+                moved = await preview_and_apply(client, {"action": "edit", "target_plu": "1001", "plu": "1999"})
+                found_old = await client.call_tool("scale_read_items", {"plus": ["1002", "1001"]})
+                return deleted, moved, found_old.structured_content
+
+        (delete_preview, delete_result), (move_preview, move_result), read = anyio.run(go)
+
+        assert [w["code"] for w in delete_preview["warnings_requiring_ack"]] == ["delete_placeholder"]
+        assert delete_result["success"] is True and delete_result["scale_statuses"] == {"A": "verified"}
+        assert fake.item(2)[1:5] == ("9002", "9002", "UNUSED", "0.01")
+
+        assert [w["code"] for w in move_preview["warnings_requiring_ack"]] == ["plu_change"]
+        assert move_result["success"] is True and move_result["scale_statuses"] == {"A": "verified"}
+        assert fake.item(1)[1:3] == ("1999", "1999")
+        assert fake.item(1)[3:5] == ("Test Cheddar", "10.00"), "the other fields stay"
+
+        assert [row["found"] for row in read["scales"][0]["results"]] == [False, False], "neither old PLU is on the scale"
+        assert not any(m.raw.startswith(b"E") for m in fake.messages)
+        assert_wire_clean(fake)
+    finally:
+        fake.stop()
+        fake.assert_clean()

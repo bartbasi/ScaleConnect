@@ -2,7 +2,7 @@
 
 For the driver. Written in our own words from packet captures and tests on the test scale. No addresses, no real product data and no vendor code belong in this file.
 
-**Status, November 1, 2026.** The read is found and works. A delete message probably exists, but no test has shown that it removes anything. The test scale left the network right after the delete probes and the lab stopped. Bart later found its power off. Why it was off is unknown. Sections marked "not tested" are waiting for the scale to come back.
+**Status, November 2, 2026.** The read is found and works, and can freeze a scale (section 3). Delete is done by overwriting the id with a placeholder, and Bart checked that at the test scale. A delete message probably exists too, but no test has shown that it removes anything, and it is never sent (section 7). Sections marked "not tested" are still open.
 
 ## Confidence labels
 
@@ -34,7 +34,8 @@ Private files on the lab PC. They never go in the repo.
 |---|---|---|
 | Read all items | Send `LP`, then `Ok` after each block, until `LP00End` | Reply, read back |
 | Add or change an item | `bX01XX`, `GP` batches, `GPF0` | Bart |
-| Delete an item | Not known. `EP` is the only candidate. **Keep delete as `not_available`** | Reply only, effect not shown |
+| Delete an item | Overwrite the id with a placeholder record, using the add or change sequence. Never send `EP` | Bart |
+| Change a PLU | Same id with a new Code and PLU, using the add or change sequence. The old PLU stops working | Bart |
 | Identify a scale | `CX` | Reply |
 
 ## 1. Transport
@@ -178,6 +179,7 @@ What is proven:
 - Our own code changed a price on all three scales, and only the targeted scale changed when one was targeted. (Bart)
 - A new item uses the same message with a new id. (Bart)
 - Same id with a new PLU, description and price replaces the item in place. The old PLU disappeared on all three scales. (Bart)
+- Same id with a new Code and PLU works, and the old PLU stops working. PLU and Code are always the same 4 digit number. (Bart, November 2. See section 7.)
 - **Id decides which item is replaced, not Code or PLU.** Two ids hold the same Code and PLU side by side. Id 485 holds the last Code sent, and its old Code is gone from the read. (Reply, read back. first dump, ids 485, 493, 498) What the scale does when staff enter a PLU held by two ids is unknown.
 
 Ids:
@@ -201,11 +203,34 @@ The reply takes about 1.04 s, sometimes 0.27 to 0.75 s. The other two messages w
 
 Reply is immediate. After an accepted item plus `GPF0`, the scale does not answer new connections for about 10 to 11 s. After a session where the item got `Error`, there is no such gap. (Reply. test8 streams 58, 60, 62. `captures/scale-5min-20261031.pcapng` stream 3.) ScaleLink's message file mentions the scale processing information after sending completes, which may be this. (Inferred) A `GP` without `GPF0` has not been tested. Always send it.
 
-## 7. Delete: `E`, not proven
+## 7. Delete: a placeholder, and never `E`
 
-**Do not send any `E` message to a production scale. Keep delete behind `not_available`.** These are all our data.
+**A delete overwrites the id with a placeholder record. The library never sends any `E` message, to any scale.**
 
-After the `EP` tests below, FRONT dropped off the network, then froze within seconds of every reboot until its products were factory reset. Either those messages or the odd test records stored on it caused that. We can't separate the two. No more `E` tests without a fresh decision from Bart.
+### The placeholder
+
+Replacing an id removes the old PLU, so this needs no message of its own. It is an ordinary `GP` record in the sequence in section 6. For id N:
+
+| Field | Value |
+|---|---|
+| Id | N |
+| Code and PLU | 9000 + N, so 9001 to 9500 |
+| Description | `UNUSED` |
+| Price | `0.01` |
+| Field 6 | Empty |
+| Fields 7 to 12 | `1 1 0 0 0 0` |
+| Time | When it was sent |
+| Fields 14 to 20 | All `0` |
+
+Tested on FRONT on November 2, 2026. Through the library's own send and read, ids 485 to 487 went from item records to placeholders and back, and each read back exactly, such as `486, 9486, 9486, UNUSED, 0.01`. Bart then checked at the scale, and all six PLUs came out as expected. (Bart)
+
+Staff look items up only by PLU, so a placeholder does no harm. It does use up the slot until an add writes over it. (Inferred)
+
+### `E`: what the probes showed
+
+These tests are why `E` stays unused. They are all our data. No more `E` tests without a fresh decision from Bart.
+
+After the `EP` tests below, FRONT dropped off the network, then froze within seconds of every reboot until its products were factory reset. Either those messages or the odd test records stored on it caused that. We can't separate the two.
 
 All framed, on fresh connections, aimed at a throwaway item. (Reply. notebook "6:00 PM" and "Correction and study of the EP timing", p1 capture streams 61 to 67.)
 
@@ -237,8 +262,6 @@ What we don't know:
 ScaleLink's own Delete and Purge showed no `E` message in test9 and test10. So we have no capture of a real delete.
 
 A full send never removes anything. Ids 485 to 500 were not in ScaleLink's two full sends and were still on the test scale afterward. So that is why an item purged from ScaleLink stays on a scale. (Reply, read back. first dump, test9.)
-
-If `EP` can't be proven, a fallback is to overwrite the id with a placeholder item, since replacing an id removes the old PLU. (Inferred. Not tried as a delete. It uses up the id.)
 
 ### `S` and `D`
 
@@ -327,12 +350,14 @@ Reply waits on full sends in test9 and test10. (Reply. `research/lab/cap_timing.
 - Check each batch reply for `Ok` or `Error`. Treat anything else as `unknown`.
 - Refuse bad values. The scale won't.
 - Make sure the count in `GP` matches the records.
-- Keep delete as `not_available`.
-- Reads of production scales need Bart's go ahead at the final gate, and should wait until the test scale's outage is explained.
+- Delete by overwriting the id with a placeholder. See section 7. Never send an `E` message.
+- Change a PLU by writing the same id with a new Code and PLU. Code always follows the PLU.
+- Say the scale may have frozen when a read gets no reply. See section 3.
+- Reads of production scales need Bart's go ahead at the final gate.
 
 ## 12. Still unknown
 
-1. Whether `EP` deletes, its exact form, and whether it caused the outage.
+1. Whether `EP` deletes, its exact form, and whether it caused the outage. The library does not need to know, since it deletes by placeholder.
 2. What a read returns when ids have gaps, and how a short last block looks.
 3. Whether `GP` works without `RI`, `bX01XX` or `GPF0`, and what each one is for.
 4. What `S` and `D` do.
@@ -355,3 +380,18 @@ Earlier beliefs that turned out wrong or incomplete. (Reply, read back. notebook
 - `Ok` on `GP` for odd values is true in the narrow sense: the values were stored. It says nothing about whether they work on the display.
 - `RI` may do nothing. It behaves like an unknown message.
 - Reads exist, and they are quick, in the two full reads the lab ran. A capture with no read in it was not proof there is none.
+
+## Label settings, seen only
+
+ScaleLink sets the scale's label and barcode settings with their own messages. All were sent after `bX01XX`, and all were seen from captures only. They carry no product records, so a label change doesn't touch items. ScaleConnect doesn't send these and has no reason to. Bart keeps doing this in ScaleLink.
+
+| Message | Seen doing |
+|---|---|
+| `Gi` | Barcode format |
+| `GG` | Header text and image paths |
+| `Gg` | Image paths |
+| `GT` | Label words, including the bottom line |
+| `GH` | Label top line |
+| `FXX` plus the serial | Sent when a scale is added to ScaleLink. Reply `F0`. Meaning unknown |
+
+ScaleLink's full product send doesn't go in id order.

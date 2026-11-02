@@ -58,6 +58,14 @@ STATUS_SEVERITY = (
 ITEM_NOT_SENT = "not_sent"
 
 
+# A delete overwrites the record with a placeholder, so the old PLU stops working. Bart approved
+# this on November 2. Each id has its own placeholder PLU, and ids run 1 to 500, so 9001 to 9500
+# is held back. Real items use 1001 to 7262.
+PLACEHOLDER_PLU_BASE = 9000
+PLACEHOLDER_DESCRIPTION = "UNUSED"
+PLACEHOLDER_PRICE = "0.01"
+
+
 def _text_tuple(value: Any, count: int, name: str) -> tuple[str, ...]:
     if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
         raise ValueError(f"{name} must be a list of {count} text values")
@@ -151,6 +159,24 @@ class Item:
 
     def replace(self, **changes: Any) -> "Item":
         return replace(self, **changes)
+
+
+def placeholder_record(item_id: int, timestamp: str) -> Item:
+    """What an empty slot holds on a scale. Never a real item, and never in the catalog."""
+    plu = str(PLACEHOLDER_PLU_BASE + item_id)
+    return Item(id=item_id, code=plu, plu=plu, description=PLACEHOLDER_DESCRIPTION, price=PLACEHOLDER_PRICE, timestamp=timestamp)
+
+
+def is_placeholder(item: Item) -> bool:
+    """Every field must match, apart from the time. Anything else is a real record to report."""
+    return item.to_fields() == placeholder_record(item.id, item.timestamp).to_fields()
+
+
+def is_reserved_plu(plu: Any) -> bool:
+    """True for a PLU only placeholders may use."""
+    if not isinstance(plu, str) or not plu.isascii() or not plu.isdigit():
+        return False
+    return PLACEHOLDER_PLU_BASE + 1 <= int(plu) <= PLACEHOLDER_PLU_BASE + MAX_ITEM_ID
 
 
 CHANGE_ACTIONS = ("add", "edit", "delete")
@@ -590,6 +616,30 @@ class ScaleResult:
             drift=tuple(Drift.from_dict(d) for d in data.get("drift", [])),
             mismatches=tuple(Drift.from_dict(d) for d in data.get("mismatches", [])),
         )
+
+
+@dataclass(frozen=True)
+class ReloadResult:
+    """The report of a reload: a full send to one scale, with no read before it."""
+
+    scale: str
+    status: str  # a ScaleStatus value
+    ok: bool  # every record reads back as sent, and nothing else needs a person
+    message: str
+    change_id: str | None = None
+    top_id: int = 0  # ids 1 to this were sent
+    accepted: int = 0  # records the scale said Ok to
+    placeholders: tuple[int, ...] = ()  # ids that got a placeholder
+    not_accepted: tuple[int, ...] = ()
+    differs_on_read: tuple[int, ...] = ()
+    left_above: tuple[int, ...] = ()  # real records above top_id, which a reload does not touch
+    duplicate_plus: tuple[str, ...] = ()  # PLUs both in the send and on an id above top_id
+
+    def to_dict(self) -> dict[str, Any]:
+        out = {f.name: getattr(self, f.name) for f in fields(self)}
+        for name in ("placeholders", "not_accepted", "differs_on_read", "left_above", "duplicate_plus"):
+            out[name] = list(out[name])
+        return out
 
 
 @dataclass(frozen=True)

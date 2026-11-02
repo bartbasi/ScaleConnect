@@ -154,13 +154,14 @@ def test_no_source_file_holds_a_forbidden_message():
 
 def test_no_public_raw_send():
     public = {n for n in dir(ScaleClient) if not n.startswith("_")}
-    assert public == {"identify", "read_items", "send_items", "delete_items"}
+    assert public == {"identify", "read_items", "send_items"}
     assert not hasattr(protocol, "frame")
     assert set(scale_module._READ_MESSAGES) == {"CX", "LP", "Ok"}
 
 
-def test_delete_stays_not_available():
-    assert scale_module.DELETE_AVAILABLE is False
+def test_delete_is_available_and_has_no_message_of_its_own():
+    assert scale_module.DELETE_AVAILABLE is True
+    assert not hasattr(ScaleClient, "delete_items")
 
 
 # ---------------------------------------------------------------- reply parsing
@@ -727,16 +728,18 @@ def test_large_price_warning(make_service, make_fake, price, warned):
     assert service.apply_change(preview.preview_id, warned).success
 
 
-def test_delete_reports_not_available_and_sends_nothing(make_service, make_fake):
+def test_delete_writes_a_placeholder_and_reads_it_back(make_service, make_fake):
     fake = loaded(make_fake())
     service = make_service([conf(fake)])
-    assert service.capabilities().delete is False and service.capabilities().read is True
+    assert service.capabilities().delete is True and service.capabilities().read is True
     preview = service.preview_changes([{"action": "delete", "target_plu": "1001"}])
-    assert "delete_not_available" in {w.code for w in preview.warnings}
-    record = service.apply_change(preview.preview_id)
-    assert record.scale_results[0].status == "not_available" and not record.success
-    assert fake.nothing_received
-    assert service.get_item(plu="1001").item.id == 1
+    assert "delete_placeholder" in {w.code for w in preview.warnings}
+    record = service.apply_change(preview.preview_id, True)
+    assert record.scale_results[0].status == "verified" and record.success
+    assert fake.item(1)[1:5] == ("9001", "9001", "UNUSED", "0.01")
+    with pytest.raises(Exception) as caught:
+        service.get_item(plu="1001")
+    assert caught.value.code == "item_not_found"
 
 
 def test_mixed_edit_and_delete_reports_both(make_service, make_fake):
@@ -745,11 +748,11 @@ def test_mixed_edit_and_delete_reports_both(make_service, make_fake):
     preview = service.preview_changes(
         [{"action": "edit", "target_plu": "1001", "price": "10.50"}, {"action": "delete", "target_plu": "1002"}]
     )
-    record = service.apply_change(preview.preview_id)
+    record = service.apply_change(preview.preview_id, True)
     result = record.scale_results[0]
-    assert result.status == "not_available"
-    assert [i.status for i in result.items] == ["verified", "not_available"]
-    assert record.outcome == "partial"
+    assert result.status == "verified"
+    assert [i.status for i in result.items] == ["verified", "verified"]
+    assert record.outcome == "success"
 
 
 # ---------------------------------------------------------------- validation
@@ -793,8 +796,10 @@ def test_float_price_never_builds_an_item():
         ({"action": "add", "plu": "3000", "description": "X", "price": "1.00", "fields_7_12": ["1"] * 6}, "invalid_change"),
         ({"action": "edit", "target_plu": "9999", "price": "1.00"}, "item_not_found"),
         ({"action": "edit", "target_plu": "1001"}, "invalid_change"),
-        ({"action": "edit", "target_plu": "1001", "plu": "1999"}, "plu_edit_held"),
-        ({"action": "edit", "target_plu": "1001", "code": "1999", "plu": "1999"}, "plu_edit_held"),
+        ({"action": "edit", "target_plu": "1001", "plu": "199"}, "invalid_plu"),
+        ({"action": "edit", "target_plu": "1001", "code": "1998", "plu": "1999"}, "code_plu_mismatch"),
+        ({"action": "edit", "target_plu": "1001", "plu": "1002"}, "duplicate_plu"),
+        ({"action": "edit", "target_plu": "1001", "plu": "9500"}, "reserved_plu"),
         ({"action": "edit", "target_plu": "1001", "code": "1009"}, "code_plu_mismatch"),
         ({"action": "edit", "target_plu": "1001", "sold_by": "piece"}, "invalid_change"),
         ({"action": "move", "target_plu": "1001"}, "invalid_action"),
@@ -1118,7 +1123,7 @@ def test_cli_flow_and_exit_codes(tmp_path, make_fake, capsys):
         catalog.import_items(seed_items())
 
     code, out = run_cli(capsys, "--config", path, "capabilities")
-    assert (code, out["delete"], out["read"]) == (0, False, True)
+    assert (code, out["delete"], out["read"]) == (0, True, True)
     code, out = run_cli(capsys, "--config", path, "scales")
     assert code == 0 and out[0]["name"] == "A" and "address" not in out[0] and "serial" not in out[0]
     code, out = run_cli(capsys, "--config", path, "search", "1001")

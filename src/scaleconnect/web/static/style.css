@@ -62,7 +62,8 @@ label { display: block; font-weight: 700; margin: 16px 0 6px 0; }
 .btn.second { background: #ffffff; color: #0b3d91; }
 .btn.danger { background: #a00018; border-color: #a00018; }
 .btn.send { background: #0a5a22; border-color: #0a5a22; min-height: 80px; font-size: 1.5rem; }
-.btn[disabled] { background: #bdbdbd; border-color: #8a8a8a; color: #333333; cursor: not-allowed; }
+.btn.send.danger { background: #a00018; border-color: #a00018; }
+.btn[disabled], .btn.send.danger[disabled] { background: #bdbdbd; border-color: #8a8a8a; color: #333333; cursor: not-allowed; }
 .btn:focus, input:focus, a:focus, select:focus { outline: 4px solid #ffb000; outline-offset: 2px; }
 
 .result {
@@ -89,7 +90,10 @@ label { display: block; font-weight: 700; margin: 16px 0 6px 0; }
 .box .line { font-size: 1.15rem; font-weight: 700; }
 .box .more { font-size: 0.9rem; margin-top: 4px; }
 
-.big { font-size: 2rem; font-weight: 700; }
+.box .reboot { font-size: 1rem; font-weight: 700; margin-top: 6px; }
+.box .stop { font-size: 1.1rem; font-weight: 700; margin: 10px 0 4px 0; }
+.big { font-size: 2rem; font-weight: 700; overflow-wrap: anywhere; }
+.box .line { overflow-wrap: anywhere; }
 .field-row { margin: 6px 0; font-size: 1.1rem; }
 .old { text-decoration: line-through; color: #555555; }
 .new { font-weight: 700; }

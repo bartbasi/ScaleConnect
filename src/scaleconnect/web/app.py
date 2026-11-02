@@ -7,6 +7,7 @@ page: same origin, a session cookie and a CSRF token in a header.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import datetime
 from collections import OrderedDict
 from pathlib import Path
@@ -14,7 +15,7 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool
 
 from scaleconnect.config import Config
 from scaleconnect.errors import ConfigError, ScaleConnectError
@@ -61,7 +62,7 @@ class PreviewBody(BaseModel):
 
 class SendBody(BaseModel):
     preview_id: str = Field(max_length=100)
-    acknowledge_warnings: bool = False
+    acknowledge_warnings: StrictBool = False  # only a real true counts, never "yes" or 1
     acknowledge_drift: list[str] = Field(default_factory=list, max_length=50)
 
 
@@ -147,8 +148,8 @@ def create_app(
 ) -> FastAPI:
     """Build the page. Refuses to build without a PIN.
 
-    plu_edit_enabled: set True when the library stops holding PLU edits. The edit screen then
-    lets staff change the PLU. The library still has the last word.
+    plu_edit_enabled: when True the edit screen lets staff change the PLU. Code always follows
+    the PLU, so the page never shows Code as a field. The library still has the last word.
     allowed_hosts: the Host header values to answer. Default: the configured web host and port.
     stalled_after_seconds: a change with no finish, that this program is not running, older
     than this is shown as stopped, not as working.
@@ -259,7 +260,7 @@ def create_app(
             "busy": jobs.busy(),
             "description_max_length": description_max,
             "plu_edit_enabled": plu_edit_enabled,
-            "delete_note": "Deleting items is not available yet.",
+            "delete_note": "" if caps.get("delete") else "Deleting is not available right now. Ask Bart.",
         }
     @app.post("/api/login")
     def login(body: LoginBody, request: Request):
@@ -355,10 +356,15 @@ def create_app(
     def remember(result: Any, data: dict[str, Any], settle: bool = False) -> dict[str, Any]:
         """Mark each drift as one a person may acknowledge or not, and remember the ones they may not."""
         blocked: set[str] = set()
+        for warning in data.get("warnings", []):
+            # A read with no reply may mean the scale froze. The page says so plainly.
+            warning["reboot"] = words.may_need_reboot(warning.get("message"))
         for drift in data.get("drift", []):
             drift["different_product"] = words.is_different_product(drift)
             # Settling is how a person resolves a different product, so it keeps its token. A change never does.
             drift["can_ack"] = bool(drift.get("ack_token")) and (settle or not drift["different_product"])
+            drift["unfinished_move"] = words.is_unfinished_move(drift)
+            drift["plain"] = words.drift_words(drift)  # staff words for a drift nobody may override, or None
             if drift.get("ack_token") and not drift["can_ack"]:
                 blocked.add(drift["ack_token"])
         if result.ok and result.preview_id:
@@ -379,7 +385,9 @@ def create_app(
                 "scales": [], "differences": [], "warnings": [], "errors": problems, "drift": [], "scales_read": [],
             }
         result = service.preview_changes(changes, requested_by="web", read_scales=body.read)
-        return remember(result, result.to_dict())
+        data = result.to_dict()
+        data["errors"] = words.plain_errors(data.get("errors", []))
+        return remember(result, data)
 
     @app.post("/api/settle/preview")
     def settle_preview(body: SettleBody, request: Request):
@@ -388,7 +396,9 @@ def create_app(
         if problem:
             return problem
         result = service.preview_settle_drift(scale=body.scale, take=body.take, plu=body.plu, requested_by="web")
-        return remember(result, result.to_dict(), settle=True)
+        data = result.to_dict()
+        data["errors"] = words.plain_errors(data.get("errors", []))
+        return remember(result, data, settle=True)
 
     @app.post("/api/check")
     def check(body: CheckBody, request: Request):
@@ -397,7 +407,8 @@ def create_app(
         if problem:
             return problem
         reads = service.read_scale_items(plus=[body.plu])
-        return {"scales": [{"scale": r.scale, "status": r.status, "message": r.message} for r in reads]}
+        # No raw messages: they can hold scale details. Staff get plain words, and a reboot flag.
+        return {"scales": [words.read_row(r.scale, r.status, r.message) for r in reads]}
 
     @app.post("/api/orphan")
     def mark_orphan(body: OrphanBody, request: Request):
@@ -494,6 +505,10 @@ def create_app(
             out.update(state="running", heading=words.OUTCOME_WORDS["in_progress"][0], severity=words.WORKING)
             out["rows"] = [words.pending_row(s, i == 0) for i, s in enumerate(order)]
             return out
+        if job is not None and job.state == "running" and record.finished_at is not None:
+            # The library logs the finish, then frees the lock, and only then does the job end. Until
+            # it ends this send still counts as busy, so do not say finished yet.
+            record = replace(record, finished_at=None, outcome="in_progress", success=False, verified=False, display="", summary="")
 
         results = {r.scale: r for r in record.scale_results}
         order = expected or [r.scale for r in record.scale_results]
