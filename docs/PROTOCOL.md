@@ -2,7 +2,7 @@
 
 For the driver. Written in our own words from packet captures and tests on the test scale. No addresses, no real product data and no vendor code belong in this file.
 
-**Status, November 1, 2026.** The read is found and works. A delete message probably exists, but no test has shown that it removes anything. The test scale left the network right after the delete probes and the lab stopped. Sections marked "not tested" are waiting for the scale to come back.
+**Status, November 1, 2026.** The read is found and works. A delete message probably exists, but no test has shown that it removes anything. The test scale left the network right after the delete probes and the lab stopped. Bart later found its power off. Why it was off is unknown. Sections marked "not tested" are waiting for the scale to come back.
 
 ## Confidence labels
 
