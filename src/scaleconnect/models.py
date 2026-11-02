@@ -182,7 +182,7 @@ def is_reserved_plu(plu: Any) -> bool:
 CHANGE_ACTIONS = ("add", "edit", "delete")
 SOLD_BY_FIELD_7 = {"weight": "1", "piece": "0"}
 _CHANGE_KEYS = frozenset(
-    {"action", "target_plu", "target_id", "plu", "code", "description", "price", "sold_by", "replace_orphan_id"}
+    {"action", "target_plu", "target_id", "plu", "code", "description", "price", "sold_by", "replace_orphan_id", "expected_plu"}
 )
 
 
@@ -206,6 +206,7 @@ class Change:
     price: str | Decimal | None = None
     sold_by: str | None = None
     replace_orphan_id: int | None = None
+    expected_plu: str | None = None  # delete only: refuse if the target now holds another PLU
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "Change":
@@ -218,7 +219,7 @@ class Change:
             raise _change_error("A change needs an action: add, edit or delete.", "action")
         if isinstance(data.get("price"), (float, int)):
             raise _change_error("Price must be text such as \"9.99\", not a number.", "price")
-        for name in ("target_plu", "plu", "code", "description", "sold_by"):
+        for name in ("target_plu", "plu", "code", "description", "sold_by", "expected_plu"):
             value = data.get(name)
             if value is not None and not isinstance(value, str):
                 raise _change_error(f"{name} must be text.", name)
@@ -236,6 +237,7 @@ class Change:
             price=data.get("price"),
             sold_by=data.get("sold_by"),
             replace_orphan_id=data.get("replace_orphan_id"),
+            expected_plu=data.get("expected_plu"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -675,7 +677,8 @@ class ReloadResult:
     duplicate_plus: tuple[str, ...] = ()  # PLUs both in the send and on an id above top_id
     may_be_frozen: bool = False
     differences: tuple[ReloadDifference, ...] = ()  # what the reload was expected to change, from the last read
-    not_known: tuple[int, ...] = ()  # ids no read has reached, so nobody knew what they held
+    not_known: tuple[int, ...] = ()  # ids no read has reached, or whose last read was too old to trust
+    last_read_at: str | None = None  # the newest read of this scale before the reload. None if there was none
 
     def to_dict(self) -> dict[str, Any]:
         out = {f.name: getattr(self, f.name) for f in fields(self)}

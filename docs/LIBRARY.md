@@ -80,6 +80,7 @@ The input to a preview. Pass either `Change` objects or plain dicts with the sam
 {"action": "edit", "target_plu": "4001", "price": "12.75"}
 {"action": "edit", "target_id": 7, "description": "New Name", "price": "4.00"}
 {"action": "delete", "target_plu": "4002"}
+{"action": "delete", "target_id": 7, "expected_plu": "4002"}
 ```
 
 ```python
@@ -93,6 +94,7 @@ Change(
     price: str | Decimal | None = None,  # add: required. edit: optional. Never a float
     sold_by: str | None = None,    # add only: "weight" (default) or "piece". Sets field 7
     replace_orphan_id: int | None = None,  # add only: reuse an id recorded as an orphan
+    expected_plu: str | None = None,  # delete only: refuse with target_changed if the target now holds another PLU
 )
 Change.from_dict(d) -> Change      # raises ValidationFailed on unknown keys or a float price
 Change.to_dict() -> dict
@@ -131,7 +133,8 @@ The placeholder for id N has Code and PLU `9000 + N`, description `UNUSED`, pric
 - **Verified** means the id holds the placeholder and the old PLU is on no other id of that scale. Otherwise it is `mismatch`.
 - **A placeholder is an empty slot.** `compare_scales`, `read_scale_items`, `mark_orphans_from_read` and every write treat it as nothing being there. `items_read` still counts it, and the message says how many. It is not drift and not an orphan. It is never in the catalog, so never in search or the list. An add may write over one. An edit over one goes as a new item there.
 - **The catalog.** The item leaves the list once any scale took the placeholder. On `unknown` or `mismatch` alone it stays listed.
-- **The id and the PLU.** A deleted item keeps its id and its PLU until every configured scale has confirmed it, including one the change left out. An add or edit using that PLU gets `duplicate_plu`, naming the scales. A scale is confirmed by a `verified` delete, a verified reload, a later read that shows a placeholder at that id, or a read that reached every id the scale should hold and shows nothing there. A read showing the PLU under another id confirms nothing. Then the id and PLU are free again.
+- **Naming what you expect.** An id can go to a new item once a delete is finished. So a repeat built from an old result must send `expected_plu`, and it gets `target_changed` if that id now holds another PLU.
+- **The id and the PLU.** A deleted item keeps its id and its PLU until every configured scale has confirmed it, including one the change left out. For a scale since taken out of the config, the PLU comes free, and the id stays held. An add or edit using that PLU gets `duplicate_plu`, naming the scales. A scale is confirmed by a `verified` delete, a verified reload, a later read that shows a placeholder at that id, or a read that reached every id the scale should hold and shows nothing there. A read showing the PLU under another id confirms nothing. Then the id and PLU are free again.
 - **Trying again.** While a scale may still hold a deleted item, a delete can target it by PLU or id even though it has left the list. Use `scales` to name that scale. `list_unfinished` gives the change to use.
 - **A lost reply.** If a delete ended `unknown` and landed, the catalog still lists the item. Any write except a repeat of the delete is then refused with `delete_may_have_landed`, because it would bring the item back. Its token allows that.
 
@@ -139,8 +142,8 @@ The placeholder for id N has Code and PLU `9000 + N`, description `UNUSED`, pric
 
 A gap in the ids may be what freezes a read. It is not proven, so a write treats it as dangerous. Before writing an id above a scale's last filled id plus one, the service fills the ids between with placeholders in the same send, in id order. Filling relies on where a read ended, so it has these limits. All refuse the whole scale with `drift_refused`, nothing sent and no token that helps:
 
-- `read_ended_early`: a whole read ended below an id the scale should hold. That means every id the catalog lists, unless the scale is known not to have it, plus deleted items it may still hold. An add whose reply was lost does not count. Nothing about that scale's end can be trusted, so nothing goes to it, whatever the write. Reload it, or have a person look.
-- `fill_blocked`: the fill would go over an id the catalog lists, or a deleted item a scale may hold.
+- `read_ended_early`: a whole read ended below an id the scale should hold. Nothing about that scale's end can be trusted, so nothing goes to it, whatever the write. Reload it, or have a person look. An id counts unless the catalog has positive evidence it never went to this scale, which is one of these: the belief is `absent`, from an add that was not delivered there or that left it out. Or the last change there was an add that was not accepted, with no orphan noted there. Or there is no row for this scale, and the item came through an add and not the seed, so the scale joined the config later. A seeded item, or anything a scale was sent or shown holding, always counts, as do deleted items it may still hold.
+- `fill_blocked`: the fill would go over an id the catalog lists, or a deleted item a scale may hold. Settling a missed add to that scale, in id order, clears it.
 - `fill_not_previewed`: a fill nobody saw. A preview with no read shows none, so apply will not fill after one.
 
 A real fill gives the warning `gap_filled`, which needs acknowledging. So does a settle to the catalog that would fill. After the send, the scale's `message` names the ids, and `fillers_landed` lists the ones it took. They are read back with the rest. If one does not read back as sent, the scale's status is `mismatch`, with an entry in `mismatches`. A change where only fillers landed has the outcome `partial`, not `failed`. A gap already inside a table is left alone and named in the `message`. `reload_scale` closes it.
@@ -163,17 +166,17 @@ UnfinishedWork(scale: str, kind: str, item_id: int, plu: str, old_plus: tuple[st
 
 `reload_scale` is for a person, through `scaleconnect reload`. The web page and MCP server do not call it. See `docs/CLI.md` for when to use it.
 
-First it compares the catalog with this scale's last known read, with no scale contact, on PLU, description and price. If they differ, or no read has reached an id, it raises `ReloadDifferences` listing them, with nothing sent, unless `accept_differences=True`. A catalog can be out of date, and this puts its prices on the scale. Show the list to a person before passing that. Then it checks identity with `CX`, sends ids 1 to the highest id in the catalog (counting deleted items), then reads once, only if every record was accepted. No read comes first, so it works on a scale whose read would freeze. A live item goes exactly as the catalog holds it, and every other id gets a placeholder. It changes no catalog item, and it logs like a change, with the action `reload`. Rule 5: the item list is backed up as for any first write. What the scale holds is not, because that needs the read this exists to avoid, and `started` in the log says `scale_dump: not_taken_no_read_before_a_reload`. An ordinary first write to that scale later still saves the dump.
+First it compares the catalog with this scale's last known read, with no scale contact, on every field but the time. If they differ, or no read has reached an id, or that read is more than 15 minutes old (`RELOAD_READ_MAX_AGE`), it raises `ReloadDifferences` listing them and giving the time of the last read, with nothing sent, unless `accept_differences=True`. A change made in ScaleLink inside those 15 minutes cannot be seen. A catalog can be out of date, and this puts its prices on the scale. Show the list to a person before passing that. Then it checks identity with `CX`, sends ids 1 to the highest id in the catalog (counting deleted items), then reads once, only if every record was accepted. No read comes first, so it works on a scale whose read would freeze. A live item goes exactly as the catalog holds it, and every other id gets a placeholder. It changes no catalog item, and it logs like a change, with the action `reload`. Rule 5: the item list is backed up as for any first write. What the scale holds is not, because that needs the read this exists to avoid, and `started` in the log says `scale_dump: not_taken_no_read_before_a_reload`. An ordinary first write to that scale later still saves the dump.
 
 ```python
 ReloadResult(scale: str, status: str, ok: bool, message: str, change_id: str | None, top_id: int, accepted: int,
              placeholders: tuple[int, ...], not_accepted: tuple[int, ...], differs_on_read: tuple[int, ...],
              left_above: tuple[int, ...], duplicate_plus: tuple[str, ...], may_be_frozen: bool,
-             differences: tuple[ReloadDifference, ...], not_known: tuple[int, ...])
+             differences: tuple[ReloadDifference, ...], not_known: tuple[int, ...], last_read_at: str | None)
 ReloadDifference(item_id: int, plu: str | None, fields: dict[str, FieldDiff], read_at: str, message: str)
 ```
 
-`status` is `verified`, `mismatch` (a record reads back differently, or a PLU is left on two ids), `accepted_not_verified` (the read failed), `unknown` (the send stopped part way, and nothing was read), or one saying nothing went out: `unreachable`, `read_failed`, `wrong_scale`, `rejected` or `skipped_not_write_enabled`. `ok` is true only for `verified`. `message` names each price that changed from what the scale last showed, and says if it could not know. In `fields`, `before` is what the scale last showed and `after` is what was sent.
+`status` is `verified`, `mismatch` (a record reads back differently, or a PLU is left on two ids), `accepted_not_verified` (the read failed), `unknown` (the send stopped part way, and nothing was read), or one saying nothing went out: `unreachable`, `read_failed`, `wrong_scale`, `rejected` or `skipped_not_write_enabled`. `ok` is true only for `verified`. `message` gives the time of the last read, names each price that changed from what the scale showed then, and says if it could not know. `not_known` holds the ids with no read, or a read too old to trust. In `fields`, `before` is what the scale last showed and `after` is what was sent.
 
 ### Statuses
 
@@ -245,7 +248,7 @@ ScaleItemState(scale: str, status: str | None, belief: str | None, change_id: st
                last_read_matches: bool | None, last_read_found_nothing: bool)
 ```
 
-`source` is `"catalog"`. The catalog is what we want. It is not proof of what a scale holds. `last_read` is the last record read from that scale for this id, and `last_read_at` is when. If `last_read` is `None` and `last_read_at` is set, that read found nothing at this id. If both are `None`, no read has reached this id. `last_read_found_nothing` says the first of these directly. `last_read_matches` compares all 20 fields with the catalog's record, and is `None` if there is no record to compare. Use it, and do not compare a few fields yourself: the same name and price can be another product. `belief` is `present` only after a read showed it, `unknown` after a bare `Ok`, a failure or anything unsettled, and `absent` if we know it never arrived. A scale with no entry has nothing recorded.
+`source` is `"catalog"`. The catalog is what we want. It is not proof of what a scale holds. `last_read` is the last record read from that scale for this id, and `last_read_at` is when. If `last_read` is `None` and `last_read_at` is set, that read found nothing at this id. If both are `None`, no read has reached this id. `last_read_found_nothing` says the first of these directly. `last_read_matches` compares all 20 fields with the catalog's record, and is `None` if there is no record to compare. Use it, and do not compare a few fields yourself: the same name and price can be another product. `belief` is `present` only after a read showed it (a later read showing exactly what the catalog lists also makes it so), `unknown` after a bare `Ok`, a failure or anything unsettled, and `absent` if we know it never arrived. A scale with no entry has nothing recorded.
 
 ### Drift
 
@@ -325,7 +328,7 @@ Warning codes:
 | `interrupted_change` | false | An earlier change on these items never finished. Apply will refuse until it is resolved |
 | `scale_read_failed` | false | With `read_scales`, this scale could not be read for the preview |
 
-Error codes: `invalid_change`, `invalid_action`, `item_not_found`, `duplicate_target`, `invalid_price`, `invalid_plu`, `invalid_code`, `code_plu_mismatch`, `reserved_plu`, `duplicate_plu`, `invalid_id`, `no_free_id`, `invalid_description`, `invalid_field`, `unknown_scale`, `no_changes`, `no_scales`. `delete_not_available` appears only if `DELETE_AVAILABLE` is turned off.
+Error codes: `invalid_change`, `invalid_action`, `item_not_found`, `duplicate_target`, `invalid_price`, `invalid_plu`, `invalid_code`, `code_plu_mismatch`, `reserved_plu`, `duplicate_plu`, `invalid_id`, `no_free_id`, `invalid_description`, `invalid_field`, `unknown_scale`, `no_changes`, `no_scales`, `target_changed`, `config_changed`. `delete_not_available` appears only if `DELETE_AVAILABLE` is turned off.
 
 `preview_settle_drift` adds the warning `other_scales_may_differ` (no acknowledgement), and the errors `no_drift`, `settle_read_failed`, `settle_not_possible`, `plu_edit_held`, `plu_change_not_finished`, `read_ended_early`, `fill_blocked` and `scale_not_write_enabled`.
 
@@ -440,6 +443,7 @@ class ScaleConnectService:
     def list_orphans(self) -> dict[int, list[str]]
     def mark_orphan(self, item_id: int, scale: str, note: str = "") -> None
     def list_unfinished(self) -> list[UnfinishedWork]
+    def config_changed(self) -> str | None
     def reload_scale(self, scale: str, *, accept_differences: bool = False, requested_by: str = "unknown") -> ReloadResult
     def apply_running(self) -> bool
 ```
@@ -463,6 +467,7 @@ class ScaleConnectService:
 | `list_orphans` | No | Nothing |
 | `mark_orphan` | No | `CatalogError` for a bad id |
 | `list_unfinished` | No | Nothing |
+| `config_changed` | No | Nothing. Plain words if the config file has something this service has not loaded, or `None` |
 | `reload_scale` | Yes: `CX`, the write messages, then `LP` once. Command line only | `ReloadDifferences` with no scale contact. `ValidationFailed` for an unknown or not write enabled scale, or a catalog record that cannot be sent. `InterruptedChange`, `BackupFailed`, `LogFailed`, `ApplyBusy`, all with nothing sent |
 | `apply_running` | No | Nothing |
 
@@ -548,7 +553,7 @@ A read or `CX` that gets no reply says the scale may have frozen and may need a 
 
 How retries work: a connect that fails, at once or by timing out, is tried again up to `connect_attempts` times, and the wait doubles from `connect_retry_wait_seconds` up to 30 seconds. So is `CX` or the start of a read that gets dropped with no reply, which is another way a busy scale says no. With the defaults that is at least 65 seconds of real time, even if each refusal comes back at once. The read back keeps trying for `read_back_window_seconds`, 45 by default, also in real time. `load_config` warns if either covers under 15 seconds. Nothing is retried once a scale has stalled on an opening message or has answered.
 
-Turning a flag off in the config file takes effect at once, even in a running server. It is checked at each scale, and again right before writing. Turning a flag on needs a restart.
+Turning a flag off in the config file takes effect at once, even in a running server. It is checked at each scale, and again right before writing. So does taking a scale out or moving its address, which counts as off. Any other change needs a restart: a scale added, a flag turned on, a serial, a setting, the PIN or token. Until then `config_changed()` gives plain words, `apply_change` and `reload_scale` raise `ConfigChanged`, and a preview or settle gives the error `config_changed`, all with nothing sent. Otherwise a price edit would report success for the old scales while the new one got nothing.
 
 A preview lasts `preview_ttl_seconds`, 900 by default. Any change to the catalog's items makes all open previews stale.
 
@@ -566,16 +571,19 @@ The lock covers one `state_dir` on one PC. It does not reach another PC or Scale
 
 ### How long things take
 
-These are estimates from the lab, not measurements on a whole change. The default pace is 0.2 seconds between read messages, and reply speed is untested on a real scale.
+Measured on real scales on November 2, 2026, through the MCP server, at the default pace of 0.2 seconds between read messages. The unreachable scale row is still an estimate.
 
 | Step | Time |
 |---|---|
-| A whole table read | About 30 seconds at the default pace |
+| A whole table read of one scale | About 29 to 34 seconds |
+| A compare, or a preview with `read_scales`, on three scales | About 95 to 102 seconds |
 | Any write | A whole table read on each scale, then the write. A preview with `read_scales` does one more |
+| Apply one low id edit on three scales | About 149 seconds |
+| Apply an add, delete or PLU change at a high id on one scale | About 69 seconds |
 | The read back | The busy gap of 10 to 11 seconds, then a read up to the id. A whole table for a delete or a PLU change |
 | One unreachable scale | About 2 minutes, with the default retries |
 
-So one edit on three scales can take over a minute, and an add over 2 minutes. Reads and writes hold the lock.
+So one edit on three scales takes about 4 minutes from preview to done. Reads and writes hold the lock.
 
 ## Validation
 
@@ -613,7 +621,8 @@ All derive from `ScaleConnectError`. Each has `.code` (stable text), `.message` 
 | `PreviewAlreadyApplied` | `preview_already_applied` | 5 |
 | `InterruptedChange` | `interrupted_change` | 5 |
 | `AcknowledgementRequired` | `acknowledgement_required` | 6 |
-| `ReloadDifferences` (has `.differences` and `.not_known`) | `reload_differences` | 6 |
+| `ReloadDifferences` (has `.differences`, `.not_known` and `.last_read_at`) | `reload_differences` | 6 |
+| `ConfigChanged` | `config_changed` | 8 |
 | `BackupFailed` | `backup_failed` | 9 |
 | `ApplyBusy` | `apply_busy` | 10 |
 | `LogFailed` | `log_failed` | 1 |
@@ -703,6 +712,7 @@ class Catalog:
     # If that id is a deleted item's, this scale's belief for it becomes absent, unless items holds its PLU.
     # covered_up_to must not go past what the read can vouch for
     def scale_state_rows(self, scale: str) -> dict[int, dict]
+    def ids_added_since_seed(self) -> set[int]
     def last_reads_for_scale(self, scale: str) -> dict[int, dict]
     def deleted_still_held(self) -> list[dict]                # {"plu", "item_id", "scale"}
     def all_plu_moves(self) -> list[dict]                     # {"scale", "item_id", "old_plu"}

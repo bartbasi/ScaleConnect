@@ -131,9 +131,9 @@ A placeholder on a scale is an empty slot. It is not drift, not an orphan, and n
 
 A read can freeze a scale. See `docs/PROTOCOL.md` section 3. A gap in the ids is suspected, not proven, so no write may leave one. Before writing an id above a scale's last filled id plus one, the ids between get placeholders in the same send, in id order, and the result says so.
 
-Filling relies on where a read ended, and nobody has ruled out a read ending early. So a read that ends below an id the scale should hold refuses that scale, with nothing sent. A fill never goes over an id the catalog lists, or a deleted item a scale may hold. A real fill must have been shown in a preview that read that scale, and acknowledged. A short read frees no deleted id. A scale is confirmed free of one by a placeholder read at that id, or by a read it can trust showing nothing there, and not if the PLU is under another id. Until then the deleted item's PLU is not free either.
+Filling relies on where a read ended, and nobody has ruled out a read ending early. So a read that ends below an id the scale should hold refuses that scale, with nothing sent. An id counts unless the catalog has positive evidence it never went to this scale, such as an add that was not delivered there, so a scale that merely missed an add is not stuck. A fill never goes over an id the catalog lists, or a deleted item a scale may hold. A real fill must have been shown in a preview that read that scale, and acknowledged. A short read frees no deleted id. A scale is confirmed free of one by a placeholder read at that id, or by a read it can trust showing nothing there, and not if the PLU is under another id. Until then the deleted item's PLU is not free either.
 
-`scaleconnect reload` is for a person at the command line, not the page or the MCP server. A catalog can be out of date, so first it compares itself with that scale's last known read, with no scale contact. If they differ, or nothing is known, it refuses unless a person accepts that with a second flag. It checks identity with `CX` alone, sends ids 1 to the highest catalog id with placeholders for the rest, and reads once only if every record was accepted. The report names the prices that changed. It is the repair for a frozen scale, a scale fresh from a product reset, and a scale whose ids differ from the catalog.
+`scaleconnect reload` is for a person at the command line, not the page or the MCP server. A catalog can be out of date, so first it compares itself with that scale's last known read, with no scale contact. It compares every field but the time, and a read over 15 minutes old counts as nothing known. If they differ, or nothing is known, it refuses unless a person accepts that with a second flag. It checks identity with `CX` alone, sends ids 1 to the highest catalog id with placeholders for the rest, and reads once only if every record was accepted. The report names the prices that changed. It is the repair for a frozen scale, a scale fresh from a product reset, and a scale whose ids differ from the catalog.
 
 ## Catalog
 
@@ -145,7 +145,7 @@ Ids are limited to 500, and the real catalog is close to that. New items take th
 
 ## Config
 
-Path: `~/.config/scaleconnect/config.toml`. It holds scale names, addresses, write enabled flags, the PIN and the MCP token. Only FRONT is write enabled until Bart says otherwise. The default for any scale with no flag is not write enabled. Code must run on Windows and Linux.
+Path: `~/.config/scaleconnect/config.toml`. It holds scale names, addresses, write enabled flags, the PIN and the MCP token. Only FRONT is write enabled until Bart says otherwise. A running service refuses writes if the file has since gained anything it has not loaded, and says to restart both services. A flag turned off takes effect at once. The default for any scale with no flag is not write enabled. Code must run on Windows and Linux.
 
 ## Stack
 

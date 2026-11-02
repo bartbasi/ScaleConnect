@@ -22,6 +22,13 @@ class ConfigError(ScaleConnectError):
     exit_code = 8
 
 
+class ConfigChanged(ScaleConnectError):
+    """The config file now says something this running service did not load. Nothing was sent."""
+
+    code = "config_changed"
+    exit_code = 8
+
+
 class ValidationFailed(ScaleConnectError):
     code = "validation_failed"
     exit_code = 3
@@ -84,15 +91,17 @@ class ReloadDifferences(ScaleConnectError):
     code = "reload_differences"
     exit_code = 6
 
-    def __init__(self, message: str = "", differences: Sequence[Any] = (), not_known: Sequence[int] = ()) -> None:
+    def __init__(self, message: str = "", differences: Sequence[Any] = (), not_known: Sequence[int] = (), last_read_at: str | None = None) -> None:
         super().__init__(message)
         self.differences = list(differences)
         self.not_known = list(not_known)
+        self.last_read_at = last_read_at
 
     def to_dict(self) -> dict[str, Any]:
         out = super().to_dict()
         out["differences"] = [d.to_dict() for d in self.differences]
         out["not_known"] = list(self.not_known)
+        out["last_read_at"] = self.last_read_at
         return out
 
 

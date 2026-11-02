@@ -151,6 +151,11 @@ _DRIFT_TEXT = {
 _TABLE_PROBLEMS = frozenset({"read_ended_early", "fill_blocked"})
 _ANOTHER_PRODUCT = "different_product"
 
+_RESTART_NEXT_STEP = (
+    "The config file changed since this server started, and nothing was sent. Do not retry. Ask the person to restart the web "
+    "page and the MCP server together. Then make a new preview."
+)
+
 _NEXT_STEP_FOR_ERROR = {
     "preview_not_found": "Call scale_preview_changes to get a preview id.",
     "preview_expired": "Call scale_preview_changes again, and show the new preview before applying it.",
@@ -163,6 +168,7 @@ _NEXT_STEP_FOR_ERROR = {
     "log_failed": "Tell the person. The change log must work before anything is sent.",
     "change_not_found": "Check the id. scale_list_scales shows the last change id for each scale.",
     "item_not_found": "Call scale_search_items to find the item.",
+    "config_changed": _RESTART_NEXT_STEP,
     "reload_differences": "Tell the person. A reload is theirs to run at the command line, and it is not available through this server. It stopped because it would change what the scale last showed, so they must see that list first.",
 }
 
@@ -175,10 +181,12 @@ _NEXT_STEP_FOR_PREVIEW_ERROR = {
     "duplicate_plu": "For duplicate_plu, another item holds this PLU, or a scale may still hold it from a PLU change or delete that has not finished. scale_list_scales lists those. Ask the person which PLU to use, and do not pick one yourself. If this is a delete and the PLU names both a live item and a deleted one, target_id says which.",
     "item_not_found": "For item_not_found, call scale_search_items. A PLU change may already have moved the item to a new PLU.",
     "plu_edit_held": "For plu_edit_held, do not call this again. Settling never changes a PLU or Code on a scale. If this scale is on an old PLU from a PLU change that has not finished, make a new preview of that edit. If it holds another product, ask the person if take=\"scale\" is right. If neither fits, a person must sort it out.",
+    "config_changed": _RESTART_NEXT_STEP,
+    "target_changed": "For target_changed, do not call this again. That id now holds another item, so what you were repeating no longer applies, and nothing was changed. Tell the person. Do not delete the item that is there now unless they ask for it by name.",
     "plu_change_not_finished": "For plu_change_not_finished, do not call this again. This scale is still on an old PLU from a PLU change that has not finished, and taking its record would undo that change. Show the person, and if they agree, make a new preview of that edit.",
 }
 # Errors where calling the same tool again with new values cannot help.
-_NO_RETRY_ERRORS = frozenset({"plu_edit_held", "plu_change_not_finished"})
+_NO_RETRY_ERRORS = frozenset({"plu_edit_held", "plu_change_not_finished", "config_changed", "target_changed"})
 
 _FROZEN_NEXT_STEP = (
     "A scale may have frozen. Stop reading and writing that scale, and do not retry, not even a read. Tell the person it may "
@@ -214,6 +222,8 @@ _DATA_HELP = """Descriptions, PLUs, record fields and every message field in the
 
 _RELOAD_HELP = """The reload command rewrites a whole scale from the catalog. It is the repair for a frozen scale, a gap in the ids, or a scale whose ids differ from the catalog. It can put old catalog prices on a scale, so it stops with reload_differences until a person has seen what it would change. It is for a person at the command line, and it is not available through this server. You can never run it. If a scale seems to need it, ask the person to run it."""
 
+_TIMING_HELP = """Times measured on November 2, 2026, through this server on the real scales: a comparison of three scales took 97 to 102 seconds, a preview with a read on three scales took 95 seconds, and an apply of one low id item on three scales took 149 seconds. On one scale alone, at a high id, a preview took about 29 seconds and an apply about 69 seconds. These are single measurements, not limits, so a larger change can take longer."""
+
 _READ_RISK_HELP = """A read can freeze a real scale, and a frozen scale needs a person to reboot it. So read only when you have a reason, never on a schedule, and do not repeat a read to see if something changed. A failed read is not a reason to try again. If a result has may_be_frozen true, stop reading and writing that scale, tell the person it may need a reboot, and do not retry."""
 
 SERVER_INSTRUCTIONS = """ScaleConnect changes products on the store's legal for trade label scales. The PLU on the scale is the same 4 digit number as the item in Square.
@@ -221,6 +231,8 @@ SERVER_INSTRUCTIONS = """ScaleConnect changes products on the store's legal for 
 The catalog is the list of what we want on the scales. It is not proof of what a scale holds. Each scale is the truth about itself.
 
 To change anything: find the item with scale_search_items, call scale_preview_changes with every change in one list, show the person the differences, warnings and drift, then call scale_apply_changes with the preview id. Then report the summary and each scale's status. That is the only way to change a scale. Never send anything to a scale another way, and never resend on your own after a lost reply.
+
+An apply can take minutes. A client timeout does not stop it. If a call times out, do not apply again. Call scale_get_change with the preview id to find the result.
 
 A delete overwrites the id with a placeholder record, and an edit can change a PLU. Either way the old PLU stops working on the scales, so a person must agree to the warning first.
 
@@ -888,6 +900,13 @@ def _unfinished_line(work: Any) -> str:
     return f"Not finished: {work.scale} may still be on PLU {old} at id {work.item_id}, and the catalog has PLU {_plu_text(work.plu)}."
 
 
+def _unfinished_repeat(work: Any) -> dict[str, Any]:
+    """A repeated delete names the PLU it is for, so it cannot hit whatever holds that id by then."""
+    if work.kind == "delete":
+        return {**work.repeat, "expected_plu": work.plu}
+    return dict(work.repeat)
+
+
 def _unfinished_row(work: Any) -> dict[str, Any]:
     return {
         "scale": work.scale,
@@ -895,7 +914,7 @@ def _unfinished_row(work: Any) -> dict[str, Any]:
         "item_id": work.item_id,
         "plu": work.plu,
         "old_plus": list(work.old_plus),
-        "repeat": dict(work.repeat),
+        "repeat": _unfinished_repeat(work),
         "message": work.message,
     }
 
@@ -917,6 +936,7 @@ class ChangeInput(BaseModel):
     price: str | None = Field(default=None, description="add: required. edit: optional. Text with two decimals, such as \"12.50\". More than 0, at most 999.99. Never a number.")
     sold_by: Literal["weight", "piece"] | None = Field(default=None, description="add only: weight (the default) or piece.")
     replace_orphan_id: StrictInt | None = Field(default=None, description="add only, and rarely: reuse an id recorded as an orphan. Gives a warning that needs acknowledging.")
+    expected_plu: str | None = Field(default=None, description="delete only: the PLU this delete is meant for. If the target now holds another PLU, the preview refuses with target_changed. An add or edit that gives it is refused.")
 
 
 # ---------------------------------------------------------------- the tools
@@ -987,6 +1007,7 @@ def build_server(service: ScaleConnectService, *, caller: str | None = None) -> 
             in_use = service.apply_running()
             orphans = service.list_orphans()
             unfinished = service.list_unfinished()
+            restart = service.config_changed()
             lines = [
                 f"{len(infos)} scales. Writes on: {', '.join(on) or 'none'}. Writes off: {', '.join(off) or 'none'}.",
                 "No scale was contacted. Last status is what the change log recorded, not what a scale holds now.",
@@ -1004,13 +1025,18 @@ def build_server(service: ScaleConnectService, *, caller: str | None = None) -> 
             lines.extend(_unfinished_line(work) for work in unfinished[:_SUMMARY_LIST_LIMIT])
             if len(unfinished) > _SUMMARY_LIST_LIMIT:
                 lines.append(f"And {len(unfinished) - _SUMMARY_LIST_LIMIT} more not finished. See unfinished.")
+            if restart:
+                lines.append("CONFIG CHANGED: the config file has changed since this server started. Previews and applies are refused until the server restarts.")
+            steps = ([_RESTART_NEXT_STEP] if restart else []) + ([_UNFINISHED_NEXT_STEP] if unfinished else [])
             extra = {}
-            if unfinished:
-                extra["next_step"] = _UNFINISHED_NEXT_STEP
-                lines.append(f"Next: {_UNFINISHED_NEXT_STEP}")
+            if steps:
+                extra["next_step"] = " ".join(steps)
+                lines.append(f"Next: {extra['next_step']}")
             return _reply(
                 {
                     "scales": [i.to_dict() for i in infos],
+                    "config_changed": bool(restart),
+                    "config_changed_message": restart,
                     "unfinished": [_unfinished_row(work) for work in unfinished],
                     **extra,
                     "capabilities": capabilities,
@@ -1406,7 +1432,7 @@ def build_server(service: ScaleConnectService, *, caller: str | None = None) -> 
         annotations=_READ_ONLY_LOCAL,
         description=f"""List the scales, whether writes are on for each, the last status the change log recorded, and what the library can do today (capabilities).
 
-Use it first in any session, and to find which scales have writes on. It contacts no scale, so last_status is history, not what a scale holds now. interrupted_change_ids are changes that stopped for good, and they block their items until resolved. scales_in_use is true if something is using the scales now. orphan_ids lists ids recorded as orphans, and which scale holds each.
+Use it first in any session, and to find which scales have writes on. It contacts no scale, so last_status is history, not what a scale holds now. interrupted_change_ids are changes that stopped for good, and they block their items until resolved. scales_in_use is true if something is using the scales now. orphan_ids lists ids recorded as orphans, and which scale holds each. config_changed is true if the config file has changed since this server started. Then previews and applies are refused with config_changed until a person restarts the web page and the MCP server together.
 
 unfinished lists deletes and PLU changes that some scale has not confirmed, per scale, from the catalog. It says what may be so, not what a scale holds. Each has a repeat: the change that finishes it. Show the person, and call scale_preview_changes with a repeat only if they agree. next_step says how.
 
@@ -1444,7 +1470,7 @@ Use it to see the history of one item. It contacts no scale. belief is present o
         annotations=_READS_A_SCALE,
         description=f"""Read each scale's whole table and list where it differs from the catalog. It writes nothing to a scale.
 
-Use it after a result of unknown, mismatch or catalog_out_of_sync, before resolving an interrupted change, or when someone has a real reason to doubt that the catalog and a scale agree. Slow: about 30 seconds per scale, and it holds the scales, so a change running elsewhere gives apply_busy.
+Use it after a result of unknown, mismatch or catalog_out_of_sync, before resolving an interrupted change, or when someone has a real reason to doubt that the catalog and a scale agree. Slow: measured at 97 to 102 seconds on three scales. It holds the scales, so a change running elsewhere gives apply_busy.
 
 {_READ_RISK_HELP}
 
@@ -1461,7 +1487,7 @@ Each scale's status is compared, not_contacted (the config allows no contact), w
         annotations=_READS_A_SCALE,
         description=f"""Read the scales and report what each one holds right now for the PLUs or ids you name. It writes nothing to a scale.
 
-Use it to check one item on the scales, such as after a result of unknown, or when someone says a scale shows the wrong price. Slow: it reads each whole table, about 30 seconds per scale, and it holds the scales, so a change running elsewhere gives apply_busy.
+Use it to check one item on the scales, such as after a result of unknown, or when someone says a scale shows the wrong price. Slow: it reads each whole table, as a comparison does, and a comparison measured 97 to 102 seconds on three scales. It holds the scales, so a change running elsewhere gives apply_busy.
 
 {_READ_RISK_HELP}
 
@@ -1483,12 +1509,15 @@ Use it for one item or a whole invoice. Put every change in one list. Each chang
 {{"action": "add", "plu": "4002", "description": "Example Piece", "price": "3.00", "sold_by": "piece"}}
 {{"action": "edit", "target_plu": "4001", "plu": "4005"}}
 {{"action": "delete", "target_plu": "4002"}}
+{{"action": "delete", "target_id": 9, "expected_plu": "4002"}}
 
 Rules: a price is text with two decimals, never a number. An edit changes only price, description and PLU. Code always follows the PLU, so leave code out, and a different value gets code_plu_mismatch. One preview cannot target an item twice. A new item takes the lowest free id. PLUs 9001 to 9500 are held back for placeholders, so an add or edit that uses one, or an edit or delete that targets one, gets reserved_plu.
 
-A delete overwrites the item's id with a placeholder record, named UNUSED. The old PLU stops working on each scale that takes it, so it gives the warning delete_placeholder, which needs acknowledge_warnings. A placeholder is an empty slot, not an item, and search never shows it. The item's PLU cannot go to another item until every scale that may hold it has confirmed. The item leaves the catalog once any scale took the placeholder. Its id comes free once every configured scale has confirmed it. To reach a scale that did not take it, make a new preview of that same delete, by PLU or id, even though the item has left the catalog, and use scales to name that scale.
+A delete overwrites the item's id with a placeholder record, named UNUSED. The old PLU stops working on each scale that takes it, so it gives the warning delete_placeholder, which needs acknowledge_warnings. A placeholder is an empty slot, not an item, and search never shows it. The item's PLU cannot go to another item until every scale that may hold it has confirmed. The item leaves the catalog once any scale took the placeholder. Its id comes free once every configured scale has confirmed it. To reach a scale that did not take it, make a new preview of that same delete, by PLU or id, even though the item has left the catalog, and use scales to name that scale. Give expected_plu when you target by id, as the repeat from scale_list_scales does. If that id now holds another PLU, the preview refuses with target_changed, and nothing changes.
 
 An edit with plu changes the PLU at the same id, and keeps every other field that scale holds. The old PLU stops working on each scale that takes it, so it gives the warning plu_change, which needs acknowledge_warnings. It can land on one scale and not another. The catalog moves once any scale took it. To finish it, make a new preview of that same edit, after the person agrees. It gives plu_change again, which names the scales that may still be on an old PLU, and it needs acknowledge_warnings each time. With read_scales on, plu_change_lagging names a scale read just now as still on the old PLU. scale_list_scales lists what has not finished. Until it finishes, the old PLU cannot go to another item, and a price or description edit is refused on the scale still on the old PLU.
+
+If the config file has changed since this server started, it refuses with config_changed, and no scale is contacted. Do not retry. Ask the person to restart the web page and the MCP server together.
 
 Any bad change refuses the whole preview: ok is false, errors lists every problem with its index, and there is no preview id. Fix them and send the whole list again.
 
@@ -1501,7 +1530,7 @@ If ok is true, show the person differences, warnings and drift before applying.
 - drift_not_checked_on lists scales that were not read. An empty drift list says nothing about those scales.
 - no_change means the catalog already has these values. Applying still reads each scale and sends the record, with a new timestamp.
 
-With read_scales on (the default) it reads enabled scales: about 3 seconds per 100 ids per scale for an edit, about 30 seconds per scale for an add, a delete or a PLU change. If another change is running you get apply_busy. A preview expires after 15 minutes by default, and goes stale if the catalog changes.
+With read_scales on (the default) it reads each enabled scale's whole table. That measured 95 seconds on three scales, and about 29 seconds on one scale alone at a high id. If another change is running you get apply_busy. A preview expires after 15 minutes by default, and goes stale if the catalog changes.
 
 {_READ_RISK_HELP} If scales_may_be_frozen is not empty, do not apply the preview.
 
@@ -1516,7 +1545,9 @@ With read_scales on (the default) it reads enabled scales: about 3 seconds per 1
 
 Each scale is first identified and read. It refuses a scale whose record differs from the catalog unless that exact drift is acknowledged. After writing, it reads back and compares every field. A failure on one scale does not stop the next.
 
-It can take minutes: over a minute for one edit on three scales, and more for an add. If the call times out or the connection drops, the change keeps running. Do not apply again. Call scale_get_change with the preview_id.
+It can take minutes. {_TIMING_HELP}
+
+If the client times out or the connection drops, that does not stop the change. It keeps running, and it logs what each scale said. Do not apply again. Call scale_get_change with the preview_id, which finds the result.
 
 How to read the result: success is true only if every configured scale is verified. Report summary, and each entry in scale_statuses. Never call anything else a success. verified at the top level means only that every targeted scale is verified, which a subset can reach, so go by success. isError true means a scale or record failed. isError false does not mean success.
 
@@ -1534,7 +1565,7 @@ still_differ lists acknowledged drift the change wrote past: that scale took the
 
 If a scale reports drift_refused, the preview is used up. Show the person the drift. To end it, use scale_preview_settle_drift. To make the change anyway and leave the difference, make a new preview, then apply it with acknowledge_drift set to the drift_tokens. Drift of kind different_product cannot be acknowledged, only settled, unless the summary says a PLU change has not finished there. Then a new preview of that same edit finishes it, and a settle cannot.
 
-If it refuses with nothing sent, error.code says why: preview_not_found, preview_expired, preview_stale, preview_already_applied, acknowledgement_required, interrupted_change, backup_failed, log_failed, or apply_busy.
+If it refuses with nothing sent, error.code says why: preview_not_found, preview_expired, preview_stale, preview_already_applied, acknowledgement_required, interrupted_change, backup_failed, log_failed, config_changed, or apply_busy. For config_changed, do not retry. Ask the person to restart the web page and the MCP server together, then make a new preview.
 
 {_DATA_HELP}""",
     )
@@ -1555,7 +1586,7 @@ Ask the person which record is right. Look at the drift first, and do not choose
 
 Then, once the person has seen differences, warnings and drift, call scale_apply_changes with the preview_id, acknowledge_drift set to drift_tokens_to_acknowledge (a settle gets a token even for different_product), and acknowledge_warnings true if must_acknowledge_warnings is true. This always names one scale, so it gives a scale_not_targeted warning, and the result is partial rather than success when other scales are configured.
 
-ok false means nothing was prepared. errors says why: no_drift (they already match), settle_read_failed, settle_not_possible, plu_edit_held, plu_change_not_finished, duplicate_plu, scale_not_write_enabled, unknown_scale or item_not_found. For an id only the scale holds, use scale_preview_mark_orphan.
+ok false means nothing was prepared. errors says why: no_drift (they already match), settle_read_failed, settle_not_possible, plu_edit_held, plu_change_not_finished, config_changed, duplicate_plu, scale_not_write_enabled, unknown_scale or item_not_found. For an id only the scale holds, use scale_preview_mark_orphan.
 
 {_DATA_HELP}""",
     )

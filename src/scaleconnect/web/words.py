@@ -54,6 +54,10 @@ def _held_text(item: Item | None) -> str | None:
 
 REBOOT_LINE = "The scale did not answer. It may need a reboot. Tell Bart."
 
+# Shown while the config file says something this running page has not loaded. Nothing is sent until it is restarted.
+CONFIG_NOTICE = ("Nothing was sent. The settings have changed since this page started. "
+                 "Tell Bart. The web page and the MCP server need restarting together.")
+
 
 def _get(drift: Any, name: str) -> Any:
     return drift.get(name) if isinstance(drift, dict) else getattr(drift, name, None)
@@ -173,6 +177,10 @@ def scale_row(result: ScaleResult) -> dict[str, Any]:
     elif table_words:
         words = table_words
         severity = BAD
+    elif refused and any(_get(d, "kind") == "delete_may_have_landed" for d in result.drift):
+        words = ("an earlier delete of this item has no confirmed result, so this scale may already have deleted it. Nothing was sent. "
+                 "To finish the delete, open the item and tap Delete this item. To bring the item back, tell Bart.")
+        severity = BAD
     elif refused and any(is_different_product(d) for d in result.drift):
         words = "this scale holds a different product at this number. Nothing was sent. Call Bart."
         severity = BAD
@@ -183,6 +191,8 @@ def scale_row(result: ScaleResult) -> dict[str, Any]:
             break
     if refused_unfinished:
         now = "Repeat the PLU change from the home screen or from the item."
+    elif refused and any(_get(d, "kind") == "delete_may_have_landed" for d in result.drift):
+        now = "Do not settle this item to our list. That would bring it back."
     elif refused_elsewhere or (refused and any(is_different_product(d) for d in result.drift)):
         now = "Do not try to force this. Call Bart."
     elif table_words:
@@ -378,10 +388,14 @@ def plain_error(error: dict[str, Any], unfinished: bool = False) -> dict[str, An
             text = f"{which} is also a deleted item that a scale may still sell. Finish that delete first. Tell Bart."
         else:
             text = f"{which} is already used by another item. Pick a different PLU."
+    elif code == "config_changed":
+        text = CONFIG_NOTICE
+    elif code == "target_changed":
+        text = "That number now belongs to a different item, so nothing was changed. The old result is out of date."
     elif code == "plu_on_other_id":
         text = "A scale already has that PLU on a different item. Call Bart."
     elif code == "plu_change_not_finished" or (code == "plu_edit_held" and unfinished):
-        text = ("This scale is still on the old PLU from an earlier change, so the old PLU still works on it. "
+        text = ("A PLU change did not finish on this scale, so it may still be on the old PLU. "
                 "Settling would undo that change. Repeat the PLU change instead.")
     elif code == "plu_edit_held":
         text = "Settling cannot change a PLU on a scale. To change a PLU, use Change this item. Or ask Bart."
@@ -405,15 +419,32 @@ def _list_text(names: list[str]) -> str:
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
+def plu_roles(plu: str, old_plus: Any, repeat: dict[str, Any]) -> tuple[str, list[str]]:
+    """What sending a repeat of a PLU change really does: (the PLU every scale gets, the PLUs that stop working).
+
+    plu is the PLU the catalog holds, and old_plus the PLUs a scale may hold instead. The repeat says what is sent.
+    Usually the catalog has already moved, so the repeat names the catalog's PLU and the old ones stop. But when a
+    reply was lost the catalog has not moved: the repeat names the new PLU, and the catalog's PLU is what stops.
+    """
+    target = repeat.get("plu") if isinstance(repeat.get("plu"), str) else plu
+    stopping = [p for p in [plu, *old_plus] if p != target]
+    seen: list[str] = []
+    for p in stopping:
+        if p not in seen:
+            seen.append(p)
+    return target, seen
+
+
 def unfinished_cards(work: list[Any]) -> list[dict[str, Any]]:
     """Deletes and PLU changes some scale has not confirmed, one card for each item, in staff words.
 
     This is from the catalog with no scale contact, so it says what may be so. The old PLU is only
-    called gone once the scale has confirmed it.
+    called gone once the scale has confirmed it. A repeat of a delete names the PLU, never the id, so
+    it can only ever hit that item: if the id now holds something else, the library refuses it.
     """
-    groups: dict[tuple[str, int], dict[str, Any]] = {}
+    groups: dict[tuple[str, int, Any], dict[str, Any]] = {}
     for u in work:
-        card = groups.setdefault((u.kind, u.item_id), {
+        card = groups.setdefault((u.kind, u.item_id, u.repeat.get("plu")), {
             "kind": u.kind, "item_id": u.item_id, "plu": u.plu, "scales": [], "old_plus": [], "repeat": dict(u.repeat),
         })
         card["scales"].append(u.scale)
@@ -423,19 +454,27 @@ def unfinished_cards(work: list[Any]) -> list[dict[str, Any]]:
     cards = []
     for card in groups.values():
         where = _list_text(card["scales"])
-        olds = [o for o in card["old_plus"] if _FOUR_DIGITS.fullmatch(str(o))]
-        old_text = _list_text([f"PLU {o}" for o in olds]) if olds else "the old PLU"
         if card["kind"] == "delete":
+            card["repeat"] = {"action": "delete", "target_plu": card["plu"]}
+            card["target"] = card["plu"]
+            card["stopping"] = [card["plu"]]
             card["text"] = f"The delete of PLU {card['plu']} has not been confirmed on {where}."
             card["more"] = f"Until it is, assume PLU {card['plu']} still works on {where}. Look at the scale."
             card["button"] = f"Repeat the delete of PLU {card['plu']}"
         else:
-            card["text"] = f"The PLU change to {card['plu']} has not been confirmed on {where}."
-            card["more"] = f"Until it is, assume {old_text} still works on {where}. Look at the scale."
-            card["button"] = f"Repeat the PLU change to {card['plu']}"
+            target, stopping = plu_roles(card["plu"], card["old_plus"], card["repeat"])
+            card["target"], card["stopping"] = target, [p for p in stopping if _FOUR_DIGITS.fullmatch(str(p))]
+            stop_text = _list_text([f"PLU {p}" for p in card["stopping"]]) if card["stopping"] else "the old PLU"
+            if target == card["plu"]:
+                card["text"] = f"The PLU change to {target} has not been confirmed on {where}."
+                card["more"] = f"Until it is, assume {stop_text} still works on {where}. Look at the scale."
+            else:
+                card["text"] = f"The PLU change from {card['plu']} to {target} may have landed on {where}, and nobody has confirmed it."
+                card["more"] = (f"Our list still says {card['plu']}. {where} may be on {target} or on {card['plu']}, "
+                                "and both may work there until this is finished. Look at the scale.")
+            card["button"] = f"Repeat the PLU change to {target}"
         cards.append(card)
     return cards
-
 
 def item_card(item: Item) -> dict[str, str | int]:
     return {"id": item.id, "plu": item.plu, "code": item.code, "description": item.description, "price": item.price}

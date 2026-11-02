@@ -7,6 +7,7 @@ page: same origin, a session cookie and a CSRF token in a header.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import replace
 from datetime import datetime
 from collections import OrderedDict
@@ -38,6 +39,8 @@ STATUS_FOR_CODE = {
     "preview_already_applied": 409,
     "interrupted_change": 409,
     "apply_busy": 409,
+    "config_changed": 409,
+    "target_changed": 409,
 }
 
 CSP = (
@@ -47,7 +50,7 @@ CSP = (
 
 ADD_KEYS = {"plu", "description", "price", "sold_by", "replace_orphan_id"}
 EDIT_KEYS = {"target_plu", "description", "price", "plu"}
-DELETE_KEYS = {"target_plu", "target_id"}  # target_id only for repeating a delete the catalog no longer lists
+DELETE_KEYS = {"target_plu"}  # a repeat of a delete names the PLU, never the id, so it cannot hit what the id holds now
 ALLOWED_KEYS = {"add": ADD_KEYS, "edit": EDIT_KEYS, "delete": DELETE_KEYS}
 
 
@@ -110,7 +113,7 @@ def _clean_changes(raw: list[dict[str, Any]]) -> tuple[list[dict[str, str]], lis
             if key not in allowed:
                 problems.append({"code": "invalid_field", "message": f"The field {key} cannot be sent from this page.", "index": index, "field": key})
                 bad = True
-            elif key in ("replace_orphan_id", "target_id"):
+            elif key == "replace_orphan_id":
                 if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 500:
                     problems.append({"code": "invalid_id", "message": "The scale id must be a whole number from 1 to 500.", "index": index, "field": key})
                     bad = True
@@ -241,6 +244,13 @@ def create_app(
 
     # ------------------------------------------------------------ session
 
+    def config_notice() -> bool:
+        """True if the config file now says something this running page did not load. Reading it changes nothing."""
+        try:
+            return service.config_changed() is not None
+        except Exception:  # noqa: BLE001 - a notice must never stop the page from loading
+            return False
+
     @app.get("/api/state")
     def state(request: Request):
         token = request.cookies.get(SESSION_COOKIE)
@@ -261,6 +271,7 @@ def create_app(
             "description_max_length": description_max,
             "plu_edit_enabled": plu_edit_enabled,
             "delete_note": "" if caps.get("delete") else "Deleting is not available right now. Ask Bart.",
+            "config_notice": words.CONFIG_NOTICE if config_notice() else None,
         }
     @app.post("/api/login")
     def login(body: LoginBody, request: Request):
@@ -316,6 +327,7 @@ def create_app(
                 "last_read_at": None,
                 "can_fix": False,
                 "repeat": None,
+                "repeat_meta": None,
             }
             if state_ is not None:
                 read = state_.last_read
@@ -341,11 +353,17 @@ def create_app(
                     row.update(flag="unsure", text="Not sure what is on this scale. " + (row["text"] if row["flag"] == "unsure" else ""))
             late = behind.get((info.name, shown.id))
             if late is not None:
-                olds = [o for o in late.old_plus if o.isdigit() and len(o) == 4]
-                old_text = ", ".join(olds) if olds else "the old PLU"
-                row.update(flag="unfinished", can_fix=False, repeat=dict(late.repeat), text=(
-                    f"An earlier PLU change did not finish on this scale. The old PLU ({old_text}) may still work on it. "
-                    "Repeat that PLU change. Do not settle it."))
+                target, stopping = words.plu_roles(late.plu, late.old_plus, late.repeat)
+                stopping = [p for p in stopping if p.isdigit() and len(p) == 4]
+                if target == late.plu:
+                    old_text = ", ".join(stopping) if stopping else "the old PLU"
+                    said = (f"An earlier PLU change did not finish on this scale. The old PLU ({old_text}) may still work on it. "
+                            "Repeat the PLU change. Do not settle it.")
+                else:
+                    said = (f"An earlier PLU change to {target} may have landed on this scale, and nobody has confirmed it. "
+                            f"It may be on {target} or still on {late.plu}. Repeat the PLU change. Do not settle it.")
+                row.update(flag="unfinished", can_fix=False, repeat=dict(late.repeat), text=said,
+                           repeat_meta={"plu": target, "old": stopping})
             rows.append(row)
         interrupted = []
         for change_id in view.interrupted_change_ids:
@@ -363,6 +381,9 @@ def create_app(
 
     # ------------------------------------------------------------ preview
 
+    def scale_names() -> list[str]:
+        return [s.name for s in service.list_scales()]
+
     def remember(result: Any, data: dict[str, Any], settle: bool = False) -> dict[str, Any]:
         """Mark each drift as one a person may acknowledge or not, and remember the ones they may not."""
         blocked: set[str] = set()
@@ -370,11 +391,16 @@ def create_app(
             # A read with no reply may mean the scale froze. The library says so in may_be_frozen. The page says it plainly.
             if warning.get("code") == "gap_filled":
                 warning["plain"] = words.gap_text(warning.get("message"))
+            # Which scales this note is about, so the review does not say "Nothing is different" beside it.
+            warning["scales_named"] = [n for n in scale_names() if re.search(rf"(?<![A-Za-z0-9]){re.escape(n)}(?![A-Za-z0-9])", str(warning.get("message") or ""))]
         for drift in data.get("drift", []):
             drift["different_product"] = words.is_different_product(drift)
             # Settling is how a person resolves a different product, so it keeps its token. A change never does.
             drift["can_ack"] = bool(drift.get("ack_token")) and (settle or not drift["different_product"])
             drift["unfinished_move"] = words.is_unfinished_move(drift)
+            if settle and drift.get("kind") == "missing":
+                # Pushing the list onto a scale that holds nothing there also brings back an item whose delete did not finish.
+                drift["plain_note"] = "If a delete of this item did not finish, do not settle. Open the item and tap Delete this item instead."
             drift["plain"] = words.drift_words(drift)  # staff words for a drift nobody may override, or None
             if drift.get("ack_token") and not drift["can_ack"]:
                 blocked.add(drift["ack_token"])
@@ -416,7 +442,8 @@ def create_app(
             # Settling cannot finish a PLU change. Hand the page the repeat that can.
             for u in service.list_unfinished():
                 if u.kind == "plu_change" and u.scale == body.scale and (not behind or u.item_id == behind[0].get("item_id")):
-                    data["repeat"] = {"change": dict(u.repeat), "plu": u.plu}
+                    target, stopping = words.plu_roles(u.plu, u.old_plus, u.repeat)
+                    data["repeat"] = {"change": dict(u.repeat), "plu": target, "old": stopping}
                     break
         return remember(result, data, settle=True)
 
@@ -479,7 +506,7 @@ def create_app(
             job.finished.wait(early_wait_seconds)  # quick refusals come back at once
         if job.state == "error":
             status = STATUS_FOR_CODE.get((job.error or {}).get("code", ""), 500)
-            return JSONResponse({"error": job.error}, status_code=status)
+            return JSONResponse({"error": words.plain_error(job.error or {})}, status_code=status)
         return {"preview_id": body.preview_id, "started": started, "state": job.state}
 
     def age_seconds(text: str | None) -> float | None:
@@ -519,10 +546,11 @@ def create_app(
             out.update(heading="This change has not been sent.", severity=words.WARN)
             return out
         if job is not None and job.state == "error" and record is None:
-            out.update(state="error", error=job.error, severity=words.BAD)
+            job_error = words.plain_error(job.error)
+            out.update(state="error", error=job_error, severity=words.BAD)
             out["heading"] = (
-                "The change was not sent. " + job.error["message"] if job.error.get("sent") is False
-                else "Not sure what happened. " + job.error["message"]
+                "The change was not sent. " + job_error["message"] if job_error.get("sent") is False
+                else "Not sure what happened. " + job_error["message"]
             )
             return out
         if record is None:

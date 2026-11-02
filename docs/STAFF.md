@@ -16,6 +16,17 @@ For anyone at the deli counter. Keep it short. Read the top part first.
 
 On a phone, use the web address Bart gave you.
 
+## How long it takes
+
+The page is slow on purpose. It reads each scale before it sends, and checks each one after.
+
+- The review step takes about 95 seconds, a minute and a half. The page shows "Checking the scales" while it works.
+- Sending one item to all three scales takes about 2.5 minutes. The page shows each scale as working or waiting.
+
+Expect that. Do not refresh the page. Do not tap anything twice. Do not send the same change again while it runs. You can lock your phone. Open the page again later to see where it is. Use "Recent changes" or "See the last change I sent".
+
+If it has been more than 5 minutes, look at the scales and tell Bart. Do not send again.
+
 ## Find an item
 
 1. Tap the search box.
@@ -98,6 +109,12 @@ To finish it:
 4. Tick the box that says you understand.
 5. Tap "Send to the scales". Read the line for each scale.
 
+Sometimes the box says the change "may have landed", and that nobody has confirmed it. That happens when a scale did not reply. Our list still has the old PLU, and the scale may be on the new PLU or the old one. Both may work there until you finish it. The repeat sends the new PLU to every scale and stops the old one. The review screen says which PLU stops. Read it before you tick.
+
+A repeat on an old result can be out of date. If the item has been finished or replaced since, the page says "This repeat is out of date" and sends nothing.
+
+If a scale did not answer, the review says "Do not send" and the send button is off. Do not try again and again. Tell Bart.
+
 The box goes away only when every scale has confirmed. Until then, do not give the old PLU or the new PLU to another item.
 
 Do not use "Fix this difference" on a scale that is in a "Not finished" box. The page does not offer it there, because it would undo the change on the other scales.
@@ -168,6 +185,20 @@ This means the scale and our list do not agree about which items it holds. Sendi
 Other scales may have taken the change. Read the line for each scale.
 
 If the page asks you to tick "Empty slots will be added so there is no gap", it means that scale has no item at some numbers, and empty slots named UNUSED will be put there so there is no gap. Read which numbers it names. If it surprises you, do not tick. Tell Bart.
+
+## If the page says the settings have changed
+
+Sometimes a red box says: "Nothing was sent. The settings have changed since this page started. Tell Bart. The web page and the MCP server need restarting together."
+
+This means Bart changed the settings file after the page started. The page will not send anything until it is restarted. Nothing was sent to any scale. Tell Bart. Do not keep trying. The send button stays off while the box shows.
+
+## If a delete has no confirmed result
+
+Sometimes a delete gets no clear answer from a scale. The scale may or may not have deleted the item. The item stays on our list.
+
+If you then try to "Fix this difference" on that scale, the page may refuse and say that an earlier delete of this item has no confirmed result. Nothing was sent. Do not settle it to our list, because that would bring the item back.
+
+To finish the delete, open the item and tap "Delete this item". Read the review and tick the box. To bring the item back instead, tell Bart.
 
 ## If a scale may need a reboot
 

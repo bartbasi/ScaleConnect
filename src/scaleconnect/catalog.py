@@ -38,6 +38,7 @@ MAX_ID = 500
 SCHEMA_VERSION = 4
 _LOCK_TRIES = 4
 _LOCK_GAP_SECONDS = 0.03
+_BUSY_SECONDS = 10
 BELIEFS = ("present", "absent", "unknown")
 _SUCCESS = ("verified", "accepted_not_verified")
 
@@ -299,8 +300,12 @@ class Catalog:
         if "trying" not in {r["name"] for r in db.execute("PRAGMA table_info(plu_moves)")}:
             try:
                 db.execute("ALTER TABLE plu_moves ADD COLUMN trying INTEGER NOT NULL DEFAULT 0")
-            except sqlite3.OperationalError:
-                pass  # another process opening this file got there first
+            except sqlite3.OperationalError as exc:
+                # Another process opening this file may have got there first. Anything else, such as
+                # a lock held too long, must stop here. Going on would set the version with no column.
+                if "duplicate column" not in str(exc).lower():
+                    self.close()
+                    raise CatalogError("The catalog file could not be upgraded, because it is busy. Nothing changed. Try again.") from exc
         db.execute("BEGIN IMMEDIATE")
         db.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('epoch', ?)", (uuid.uuid4().hex[:8],))
         db.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('items_version', '0')")
@@ -326,10 +331,10 @@ class Catalog:
             raise CatalogError("the catalog is closed")
         db = getattr(self._local, "db", None)
         if db is None:
-            db = sqlite3.connect(str(self.path), timeout=10, check_same_thread=False,
+            db = sqlite3.connect(str(self.path), timeout=_BUSY_SECONDS, check_same_thread=False,
                                  isolation_level=None)
             db.row_factory = sqlite3.Row
-            db.execute("PRAGMA busy_timeout = 10000")
+            db.execute(f"PRAGMA busy_timeout = {int(_BUSY_SECONDS * 1000)}")
             self._local.db = db
             with self._conns_lock:
                 # A connection belongs to its thread. One whose thread has ended is never used again.
@@ -701,6 +706,18 @@ class Catalog:
                 "UPDATE scale_state SET belief = 'absent', record = NULL WHERE scale = ? AND item_id = ? "
                 "AND belief != 'absent' AND item_id IN (SELECT id FROM items WHERE deleted = 1)",
                 [(scale, n) for n in gone])
+            # A read showing exactly what the catalog lists is what "present" means, after a lost reply too.
+            shown = [(scale, _row_to_item(r).id) for r in db.execute(_SELECT + " WHERE deleted = 0")
+                     if r["id"] in held and held[r["id"]].to_fields() == _row_to_item(r).to_fields()]
+            db.executemany("UPDATE scale_state SET belief = 'present' WHERE scale = ? AND item_id = ? AND belief = 'unknown'", shown)
+
+    def ids_added_since_seed(self) -> set[int]:
+        """Ids whose present item came through an add here, not from the seed. Seeded items were on every
+        scale at the full send. An add reaches only the scales configured then, and leaves a row for each."""
+        rows = self._conn().execute(
+            "SELECT h.item_id, h.op FROM item_history h JOIN (SELECT item_id, MAX(h_id) AS last FROM item_history "
+            "WHERE op IN ('import', 'add', 'revive') GROUP BY item_id) m ON m.last = h.h_id")
+        return {r["item_id"] for r in rows if r["op"] != "import"}
 
     def scale_state_rows(self, scale: str) -> dict[int, dict]:
         """Every state row for one scale, by id, whatever the belief."""

@@ -4,7 +4,7 @@
 (function () {
   var app = document.getElementById('app');
   var S = { signedIn: false, csrf: null, caps: { add: true, edit: true, delete: false, notes: {} }, scales: [],
-            descMax: 35, pluEdit: false, busy: false, deleteNote: '' };
+            descMax: 35, pluEdit: false, busy: false, deleteNote: '', configNotice: null };
   var REBOOT = 'The scale did not answer. It may need a reboot. Tell Bart.';
   var routeToken = 0;
   var timer = null;
@@ -38,7 +38,12 @@
   }
   function money(price) { return '$' + price; }
   function clear(el) { while (el.firstChild) { el.removeChild(el.firstChild); } }
-  function show(nodes) { clear(app); addKids(app, nodes); window.scrollTo(0, 0); }
+  function show(nodes) {
+    clear(app);
+    /* The settings changed after this page started. Nothing can be sent until Bart restarts it. */
+    if (S.configNotice) { app.appendChild(box('bad', 'Do not send', S.configNotice)); }
+    addKids(app, nodes); window.scrollTo(0, 0);
+  }
   function fmtTime(text) {
     if (!text) { return ''; }
     var d = new Date(text);
@@ -78,7 +83,7 @@
     return api('GET', '/api/state').then(function (d) {
       S.signedIn = d.signed_in; S.csrf = d.csrf; S.caps = d.capabilities; S.scales = d.scales;
       S.descMax = d.description_max_length; S.pluEdit = d.plu_edit_enabled; S.busy = d.busy;
-      S.deleteNote = d.delete_note;
+      S.deleteNote = d.delete_note; S.configNotice = d.config_notice || null;
     });
   }
 
@@ -241,7 +246,7 @@
       return h('div', null,
         box('bad', 'Not finished', c.text, c.more),
         h('button', { class: 'btn second', type: 'button', text: c.button, onclick: function () {
-          startRepeat('Repeat ' + c.kind + ' ' + c.plu, c.repeat, { kind: c.kind, plu: c.plu, old: c.old_plus || [] }, '#/');
+          startRepeat('Repeat ' + c.kind + ' ' + c.target, c.repeat, { kind: c.kind, plu: c.target, old: c.stopping || [] }, '#/');
         } }));
     });
   }
@@ -321,7 +326,8 @@
         if (s.flag === 'unfinished' && s.repeat) {
           /* Settling would undo the PLU change on the other scales, so only the repeat is offered. */
           box1.appendChild(h('button', { class: 'btn second', type: 'button', text: 'Repeat the PLU change', onclick: function () {
-            startRepeat('Repeat the PLU change to ' + it.plu, s.repeat, { kind: 'plu_change', plu: it.plu, old: [] }, '#/item/' + encodeURIComponent(it.plu));
+            var meta = s.repeat_meta || { plu: it.plu, old: [] };
+            startRepeat('Repeat the PLU change to ' + meta.plu, s.repeat, { kind: 'plu_change', plu: meta.plu, old: meta.old || [] }, '#/item/' + encodeURIComponent(it.plu));
           } }));
         } else if (s.can_fix) {
           box1.appendChild(link('#/settle/' + encodeURIComponent(it.plu) + '/' + encodeURIComponent(s.scale), (s.flag === 'different_product' ? 'Bart only: settle this on ' : 'Fix this difference on ') + s.scale, 'btn second'));
@@ -541,19 +547,29 @@
       if (!pv.ok) {
         holder.appendChild(box('bad', 'Problem', 'This cannot be sent yet.'));
         pv.errors.forEach(function (e) { holder.appendChild(box('bad', null, e.may_be_frozen ? REBOOT : e.message, e.may_be_frozen ? e.message : null)); });
+        if (draft.repeat) { holder.appendChild(box('warn', null, 'This repeat is out of date.', 'The work may already be finished, or the item may have changed. Nothing was sent.')); }
         if (pv.repeat) {
           /* Settling cannot finish a PLU change. The repeat can. */
           holder.appendChild(h('button', { class: 'btn', type: 'button', text: 'Repeat the PLU change', onclick: function () {
-            startRepeat('Repeat the PLU change to ' + pv.repeat.plu, pv.repeat.change, { kind: 'plu_change', plu: pv.repeat.plu, old: [] }, draft.back);
+            startRepeat('Repeat the PLU change to ' + pv.repeat.plu, pv.repeat.change, { kind: 'plu_change', plu: pv.repeat.plu, old: pv.repeat.old || [] }, draft.back);
           } }));
         }
         holder.appendChild(back); return;
       }
       var rep = draft.repeat || null;
-      if (rep) { holder.appendChild(repeatBox(rep)); }
+      var blocked = false; var needed = [];
+      /* A repeat is about one item, named by its PLU. If the review shows another item, nothing may be sent. */
+      var wrongItem = !!rep && (pv.differences.length === 0 || pv.differences.some(function (d) {
+        var shown = rep.kind === 'delete' ? (d.action === 'delete' ? (d.before || {}).plu : null) : (d.action === 'edit' ? (d.after || {}).plu : null);
+        return shown !== rep.plu;
+      }));
+      if (rep && !wrongItem) { holder.appendChild(repeatBox(rep)); }
+      if (wrongItem) {
+        blocked = true;
+        holder.appendChild(box('bad', 'Do not send', 'This is not the item this repeat was about.', 'Go back. Nothing was sent.'));
+      }
       pv.differences.forEach(function (d) { holder.appendChild(diffBlock(d)); });
 
-      var blocked = false; var needed = [];
       function tick(id, key, text) {
         needed.push(key);
         holder.appendChild(checkbox(id, text, function (ev) { acked[key] = ev.target.checked; update(); }));
@@ -561,7 +577,7 @@
       }
       /* A delete or a PLU change stops a PLU working. The block above already says which item.
          Each one needs its own tick, even if the library did not ask for one. */
-      var stopTicked = {}; var repTicked = false;
+      var stopTicked = {}; var repTicked = false; var frozenSeen = false;
       pv.warnings.forEach(function (wn, i) {
         var key = 'w:' + wn.code + ':' + i;
         var diff = pv.differences.filter(function (x) { return x.index === wn.index; })[0];
@@ -580,7 +596,7 @@
           if (wn.requires_ack) { tick('ack' + i, key, 'I understand. Empty slots will be added so there is no gap.'); }
           return;
         }
-        if (wn.may_be_frozen) { holder.appendChild(box('bad', 'Check this', REBOOT, wn.message)); }
+        if (wn.may_be_frozen) { frozenSeen = true; holder.appendChild(box('bad', 'Check this', REBOOT, wn.message)); }
         else { holder.appendChild(box(wn.requires_ack ? 'warn' : 'working', wn.requires_ack ? 'Read this' : 'Note', wn.message)); }
         if (wn.requires_ack) { tick('ack' + i, key, 'I have read this. Send it anyway.'); }
       });
@@ -588,21 +604,31 @@
         if (stopKind(d) && !stopTicked[d.index]) { tick('stop' + i, 'p:' + d.index, ackText(d)); }
       });
       /* A repeat of a PLU change always needs its tick. Normally the library asks. If it did not, the page does. */
-      if (rep && rep.kind === 'plu_change' && !repTicked) { tick('repeat', 'r:repeat', repeatTick(rep)); }
+      /* A PLU change that shows its own PLU line has its own tick above, so the repeat does not ask twice. */
+      var ownLine = pv.differences.some(function (d) { return !!pluChange(d); });
+      if (rep && !wrongItem && rep.kind === 'plu_change' && !repTicked && !ownLine) { tick('repeat', 'r:repeat', repeatTick(rep)); }
+      if (checking) {
+        holder.appendChild(box('working', 'Working', 'Checking the scales takes about a minute and a half.', 'Please wait. Do not refresh the page, and do not tap anything twice.'));
+      }
+      if (S.configNotice) { holder.appendChild(box('bad', 'Do not send', S.configNotice)); }
       holder.appendChild(h('h2', { text: 'The scales' }));
       pv.scales.forEach(function (name) {
         var read = pv.scales_read.indexOf(name) >= 0;
         var mine = pv.drift.filter(function (d) { return d.scale === name; });
         var line; var cls;
+        var named = pv.warnings.filter(function (w) { return (w.scales_named || []).indexOf(name) >= 0; });
         if (checking) { line = 'Checking'; cls = 'working'; }
         else if (mine.length) { line = 'Different from our list'; cls = 'bad'; }
+        else if (named.some(function (w) { return w.may_be_frozen; })) { line = 'Did not answer. Do not send. Tell Bart.'; cls = 'bad'; }
+        else if (named.length) { line = 'Read the note above.'; cls = 'warn'; }
+        else if (read && rep && rep.kind === 'plu_change') { line = 'Checked. The repeat is sent to this scale.'; cls = 'ok'; }
         else if (read) { line = 'Checked. Nothing is different.'; cls = 'ok'; }
         else { line = 'Not checked. The send will check it first.'; cls = 'warn'; }
         holder.appendChild(box(cls, name, line));
       });
       pv.drift.forEach(function (dr, i) {
         var plain = dr.plain || null;   /* staff words from the server for a drift nobody may override */
-        holder.appendChild(box('bad', dr.scale, plain ? plain.plain : dr.message, plain && plain.note ? plain.note : null));
+        holder.appendChild(box('bad', dr.scale, plain ? plain.plain : dr.message, (plain && plain.note) || dr.plain_note || null));
         if (dr.can_ack) {
           var key = 'd:' + dr.ack_token; needed.push(key);
           var words = (plain && plain.tick) || (draft.settle ? 'Yes. Settle it this way.' : 'I know this scale is different. Change it anyway.');
@@ -615,6 +641,11 @@
             plain ? plain.more : 'Call Bart.'));
         }
       });
+      if (frozenSeen) {
+        /* Sending reads that scale again, which can freeze it for good. Nothing goes out until a person has looked. */
+        blocked = true;
+        holder.appendChild(box('bad', 'Do not send', 'A scale did not answer, and sending would read it again.', 'Tell Bart. Do not try again and again.'));
+      }
       if (checkError) {
         /* The read check did not run. A change that needs empty slots is refused unless a review showed them. */
         blocked = true;
@@ -626,10 +657,10 @@
       var onlyDelete = pv.differences.length > 0 && pv.differences.every(function (d) { return d.action === 'delete'; });
       var sendLabel = onlyDelete ? 'Delete from the scales' : 'Send to the scales';
       var sendBtn = h('button', { class: 'btn send' + (onlyDelete ? ' danger' : ''), type: 'button', text: sendLabel });
-      function ready() { return !checking && !blocked && needed.every(function (k) { return acked[k]; }); }
+      function ready() { return !checking && !blocked && !S.configNotice && needed.every(function (k) { return acked[k]; }); }
       function update() {
         sendBtn.disabled = !ready();
-        sendBtn.textContent = checking ? 'Checking the scales' : (blocked ? 'Cannot send' : sendLabel);
+        sendBtn.textContent = checking ? 'Checking the scales' : ((blocked || S.configNotice) ? 'Cannot send' : sendLabel);
       }
       sendBtn.addEventListener('click', function () {
         if (!ready()) { return; }
@@ -641,6 +672,7 @@
             saveLast(pv.preview_id, draft.title); dropDraft(); formMemory = {};
             location.hash = '#/result/' + encodeURIComponent(pv.preview_id);
           }, function (e) {
+            if (e.code === 'config_changed') { S.configNotice = e.message; }
             update();
             var again = (e.code === 'preview_expired' || e.code === 'preview_stale');
             holder.appendChild(errorBox(e));
@@ -696,12 +728,12 @@
       var pc = pluChange(c);
       if (c.action === 'delete') {
         var gone = (c.before || {}).plu || c.plu;
-        if (everyScale || !gone || c.item_id === null || c.item_id === undefined) { return; }
+        if (everyScale || !gone) { return; }
         out.push(box('warn', 'Check this', 'The delete of PLU ' + gone + ' may not have finished on every scale.',
                      'A scale that is not marked changed and checked has not confirmed it. Until it does, assume PLU ' + gone +
                      ' still works on that scale. Look at the scale.'));
         out.push(h('button', { class: 'btn second', type: 'button', text: 'Repeat the delete', onclick: function () {
-          startRepeat('Repeat the delete of ' + gone, { action: 'delete', target_id: c.item_id }, { kind: 'delete', plu: gone, old: [gone] },
+          startRepeat('Repeat the delete of ' + gone, { action: 'delete', target_plu: gone }, { kind: 'delete', plu: gone, old: [gone] },
                       '#/result/' + encodeURIComponent(pid));
         } }));
         return;
@@ -748,7 +780,7 @@
         holder.appendChild(b);
       });
       if (d.state === 'running') {
-        holder.appendChild(h('p', { class: 'plain', text: 'This takes a few minutes. You can lock your phone. Open this page again to see where it is.' }));
+        holder.appendChild(h('p', { class: 'plain', text: 'Sending one item to all three scales takes about two and a half minutes. Do not refresh the page and do not send again. You can lock your phone. Open this page again to see where it is.' }));
         if (d.may_have_stopped) {
           holder.appendChild(box('warn', 'Check this', 'If this stays here for more than five minutes, it may have stopped. Look at the scales.'));
         }

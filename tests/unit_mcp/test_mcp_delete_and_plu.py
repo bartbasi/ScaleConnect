@@ -629,7 +629,7 @@ def test_list_scales_shows_an_unfinished_delete_and_plu_change_with_no_scale_con
     assert "Not finished: B may still sell PLU 1002 at id 2, because a delete has not been confirmed there." in data["summary"]
     assert "Not finished: B may still be on PLU 1001 at id 1, and the catalog has PLU 1999." in data["summary"]
     rows = {row["kind"]: row for row in data["unfinished"]}
-    assert rows["delete"]["repeat"] == {"action": "delete", "target_id": 2} and rows["delete"]["scale"] == "B"
+    assert rows["delete"]["repeat"] == {"action": "delete", "target_id": 2, "expected_plu": "1002"} and rows["delete"]["scale"] == "B"
     assert rows["plu_change"]["repeat"] == {"action": "edit", "target_plu": "1999", "plu": "1999"}
     for words in ("Show the person", "its repeat", "apply only if they agree", "no scale was contacted"):
         assert words in data["next_step"], words
@@ -787,3 +787,117 @@ def test_a_warnings_own_words_reach_a_summary_only_if_they_are_the_whole_sentenc
 
 def test_the_no_change_words_no_longer_claim_to_finish_anything():
     assert "finish" not in server_module._WARNING_TEXT["no_change"]
+
+
+# ---------- a config that changed, and a target that changed ----------
+
+
+RESTART = "The config file has changed since this service started, so nothing was sent. Restart the web page and the MCP server together, then try again."
+
+
+def assert_says_restart(data):
+    assert "Ask the person to restart the web page and the MCP server together" in data["next_step"]
+    assert "Do not retry" in data["next_step"]
+    assert "call the same tool again" not in data["next_step"]
+    assert data["next_step"] in data["summary"]
+
+
+def test_list_scales_shows_a_changed_config_and_says_who_restarts(env, monkeypatch):
+    session = Session(env)
+    assert session.data("scale_list_scales")["config_changed"] is False
+    monkeypatch.setattr(env.svc, "config_changed", lambda: RESTART)
+    data = session.data("scale_list_scales")
+    assert data["config_changed"] is True and data["config_changed_message"] == RESTART
+    assert "CONFIG CHANGED" in data["summary"]
+    assert_says_restart(data)
+    assert env.silent("A")
+
+
+def test_a_changed_config_and_unfinished_work_both_reach_next_step(env3, monkeypatch):
+    session, _ = rejected_on_b(env3)
+    monkeypatch.setattr(env3.svc, "config_changed", lambda: RESTART)
+    data = session.data("scale_list_scales")
+    assert_says_restart(data)
+    assert server_module._UNFINISHED_NEXT_STEP in data["next_step"]
+
+
+def test_a_preview_and_a_settle_refused_for_a_changed_config_say_restart(env, monkeypatch):
+    session = Session(env)
+    monkeypatch.setattr(env.svc, "config_changed", lambda: RESTART)
+    preview = session.data("scale_preview_changes", changes=[{"action": "edit", "target_plu": "1001", "price": "11.00"}])
+    assert preview["ok"] is False and "config_changed" in [e["code"] for e in preview["errors"]]
+    assert_says_restart(preview)
+    settle = session.data("scale_preview_settle_drift", scale="A", take="catalog", plu="1001")
+    assert settle["ok"] is False and settle["errors"][0]["code"] == "config_changed"
+    assert_says_restart(settle)
+    assert env.silent("A")
+
+
+def test_an_apply_refused_for_a_changed_config_says_restart_and_sends_nothing(env, monkeypatch):
+    session = Session(env)
+    preview = session.preview([{"action": "edit", "target_plu": "1001", "price": "11.00"}], read_scales=False)
+    monkeypatch.setattr(env.svc, "config_changed", lambda: RESTART)
+    result = session.call("scale_apply_changes", preview_id=preview["preview_id"])
+    data = result.structured_content
+    assert result.is_error and data["error"]["code"] == "config_changed" and data["nothing_sent"] is True
+    assert_says_restart(data)
+    assert env.silent("A")
+
+
+def test_a_delete_with_the_wrong_expected_plu_is_refused_and_says_to_tell_the_person(env):
+    session = Session(env)
+    result = session.call("scale_preview_changes", changes=[{"action": "delete", "target_id": 1, "expected_plu": "1999"}])
+    data = result.structured_content
+    assert result.is_error and data["ok"] is False
+    assert data["errors"][0]["code"] == "target_changed"
+    assert data["next_step"].startswith("For target_changed, do not call this again.") and "Tell the person" in data["next_step"]
+    assert "call the same tool again" not in data["next_step"]
+    assert env.silent("A") and env.catalog.get_by_id(1) is not None
+
+
+def test_a_delete_with_the_right_expected_plu_goes_ahead(env):
+    session = Session(env)
+    data = session.apply(session.preview([{"action": "delete", "target_id": 1, "expected_plu": "1001"}]), acknowledge_warnings=True)
+    assert data["scale_statuses"] == {"A": "verified"} and env.fakes["A"].item(1)[3] == "UNUSED"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"action": "add", "plu": "4001", "description": "X", "price": "1.00", "expected_plu": "4001"},
+        {"action": "edit", "target_plu": "1001", "price": "11.00", "expected_plu": "1001"},
+    ],
+)
+def test_expected_plu_on_an_add_or_edit_is_refused(env, change):
+    result = Session(env).call("scale_preview_changes", changes=[change])
+    data = result.structured_content
+    assert result.is_error and data["errors"][0]["code"] == "invalid_change" and data["errors"][0]["field"] == "expected_plu"
+    assert env.silent("A")
+
+
+def test_a_repeat_from_the_list_cannot_hit_a_new_item_at_that_id(make_env):
+    env = make_env({"A": True, "B": True}, seed=seed_of(6))
+    session = Session(env)
+    env.fakes["B"].error_on_ids(2)
+    session.apply(session.preview(DELETE_1002), acknowledge_warnings=True)
+    repeat = session.data("scale_list_scales")["unfinished"][0]["repeat"]
+    assert repeat["expected_plu"] == "1002"
+    held = {**repeat, "expected_plu": "1777"}  # what an old repeat looks like, once another item has that id
+    result = session.call("scale_preview_changes", changes=[held], scales=["B"])
+    assert result.is_error and result.structured_content["errors"][0]["code"] == "target_changed"
+
+
+# ---------- times ----------
+
+
+def test_tool_text_gives_the_measured_times_and_not_the_old_estimates(env):
+    tools = tool_text(env)
+    for text in tools.values():
+        for stale in ("about 3 seconds", "about 30 seconds", "over a minute"):
+            assert stale not in text, stale
+    apply_text = tools["scale_apply_changes"]
+    for words in ("It can take minutes", "measured", "149 seconds", "about 69 seconds", "does not stop the change", "Do not apply again", "scale_get_change"):
+        assert words in apply_text, words
+    assert "97 to 102 seconds" in tools["scale_compare_scales"] and "97 to 102 seconds" in tools["scale_read_items"]
+    assert "95 seconds" in tools["scale_preview_changes"] and "about 29 seconds" in tools["scale_preview_changes"]
+    assert "A client timeout does not stop it" in SERVER_INSTRUCTIONS and "do not apply again" in SERVER_INSTRUCTIONS

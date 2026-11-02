@@ -40,6 +40,7 @@ from .errors import (
     AcknowledgementRequired,
     BackupFailed,
     CatalogNotSeeded,
+    ConfigChanged,
     ChangeNotFound,
     InterruptedChange,
     ItemNotFound,
@@ -109,6 +110,10 @@ _SETTLE_ACCEPT = "settle_accept"
 _SETTLE_PUSH = "settle_push"
 _RELOAD = "reload"
 _RELOAD_DUMP_NOTE = "not_taken_no_read_before_a_reload"
+# A reload trusts a last read only this long. Prices change in ScaleLink with no word to us. It is
+# long enough to run a comparison, read the list and run the reload, and it matches a preview's life.
+RELOAD_READ_MAX_AGE = timedelta(minutes=15)
+_FIELD_WORDS = {"field6": "field 6", "fields_7_12": "sold by, tax and other settings (fields 7 to 12)", "fields_14_20": "other settings (fields 14 to 20)"}
 
 EVENT_STARTED = "started"
 EVENT_SCALE_RESULT = "scale_result"
@@ -299,6 +304,32 @@ class ScaleConnectService:
 
     def _current_scale(self, name: str) -> ScaleConfig | None:
         return next((s for s in self._current_scales() if s.name == name), None)
+
+    def config_changed(self) -> str | None:
+        """Plain words if the config file says something this running service has not loaded, or None.
+
+        A scale added or turned on would otherwise get nothing, while the rest report success. What only
+        narrows, such as a flag turned off or a scale taken out, is honored at once by _current_scales.
+        """
+        if self._config.path is None:
+            return None
+        try:
+            fresh = restrict_unofficial(load_config(self._config.path))
+        except ScaleConnectError:
+            return None  # every scale counts as off then, so nothing can be written anyway
+        loaded = {s.name: s for s in self._config.scales}
+        changed = False
+        for scale in fresh.scales:
+            was = loaded.get(scale.name)
+            if was is None or scale.serial != was.serial:
+                changed = True
+            elif (scale.write_enabled is True and was.write_enabled is not True) or (scale.read_enabled is True and was.read_enabled is not True):
+                changed = True
+        if replace(fresh, scales=(), warnings=()) != replace(self._config, scales=(), warnings=()):
+            changed = True
+        if not changed:
+            return None
+        return "The config file has changed since this service started, so nothing was sent. Restart the web page and the MCP server together, then try again."
 
     # ------------------------------------------------------------ reading
 
@@ -516,6 +547,9 @@ class ScaleConnectService:
         now = self._clock()
         created_at = now.isoformat(timespec="seconds")
         targets, errors = self._target_scales(scales)
+        restart = self.config_changed()
+        if restart:
+            errors.append(PreviewError("config_changed", restart, None, None))
         if isinstance(changes, (str, bytes, Mapping)) or not isinstance(changes, Sequence):
             errors.append(PreviewError("invalid_change", "Changes must be a list.", None, None))
             changes = []
@@ -550,7 +584,7 @@ class ScaleConnectService:
                 errors.append(PreviewError("invalid_change", "A value in this change has the wrong type.", index, None))
 
         differences = [p.difference for p in plans]
-        errors.extend(self._duplicate_plus(final, before_items, differences, self._catalog.old_plus_in_use(), self._catalog.deleted_still_held()))
+        errors.extend(self._duplicate_plus(final, before_items, differences, self._catalog.old_plus_in_use(), self._deleted_held()))
         drift: list[Drift] = []
         scales_read: list[str] = []
         fills: dict[str, list[int]] = {}
@@ -628,7 +662,16 @@ class ScaleConnectService:
             scales_read=tuple(scales_read),
         )
 
+    def _deleted_held(self) -> list[dict]:
+        """Deleted items a scale in this config may still hold. A scale taken out of the config cannot be
+        finished, and no write reaches it, so it must not hold a PLU forever. It is read if it comes back."""
+        names = {s.name for s in self._config.scales}
+        return [r for r in self._catalog.deleted_still_held() if r["scale"] in names]
+
     def _plan_add(self, change, index, before_items, final, free_ids, touched, plans, warnings, errors) -> None:
+        if change.expected_plu is not None:
+            errors.append(PreviewError("invalid_change", "Only a delete takes expected_plu.", index, "expected_plu"))
+            return
         if change.target_plu is not None or change.target_id is not None:
             errors.append(PreviewError("invalid_change", "An add has no target. It makes a new item.", index, "target_plu"))
             return
@@ -686,6 +729,9 @@ class ScaleConnectService:
         plans.append(_Plan(self._difference(index, "add", None, after), {}, replace_orphan))
 
     def _plan_edit(self, change, index, before_items, final, free_ids, touched, plans, warnings, errors) -> None:
+        if change.expected_plu is not None:
+            errors.append(PreviewError("invalid_change", "Only a delete takes expected_plu.", index, "expected_plu"))
+            return
         before, problems = self._find_target(change, index, before_items)
         old_plus = self._catalog.old_plus_in_use()
         if problems and problems[0].code == "item_not_found" and change.target_plu in old_plus:
@@ -789,13 +835,18 @@ class ScaleConnectService:
             # Already gone from the list, but a scale may still hold it, so this is the next try there.
             before = self._catalog.deleted_item_still_held(plu=change.target_plu, item_id=change.target_id)
             problems = [] if before is not None else problems
-        elif change.target_plu is not None and any(r["plu"] == change.target_plu for r in self._catalog.deleted_still_held()):
+        elif change.target_plu is not None and any(r["plu"] == change.target_plu for r in self._deleted_held()):
             # A PLU a scale may still hold as a deleted item can also be on a live one, in a catalog from before
             # that was refused. Asking by PLU could then hit the wrong product. The id says which.
             message = f"PLU {change.target_plu} names a live item, and a deleted one a scale may still hold. Give target_id to say which."
             problems = [PreviewError("duplicate_plu", message, index, "target_plu")]
         if problems:
             errors.extend(problems)
+            return
+        if change.expected_plu is not None and change.expected_plu != before.plu:
+            # An old result can name an id that a new item has since taken.
+            message = f"Id {before.id} now holds PLU {before.plu}, not PLU {change.expected_plu}. Nothing was changed."
+            errors.append(PreviewError("target_changed", message, index, "expected_plu"))
             return
         if before.id in touched:
             errors.append(PreviewError("duplicate_target", f"Id {before.id} is targeted twice in this preview.", index, None))
@@ -953,21 +1004,36 @@ class ScaleConnectService:
     def _expected_ids(self, name: str) -> set[int]:
         """Ids a read of this scale should reach: what the catalog lists, and deleted items it may still hold.
 
-        Not an id we know never arrived, or an add whose reply was lost. That one may simply not have landed.
+        An id counts unless the catalog has positive evidence it never went to this scale. A read ending
+        below an id that counts cannot be trusted. A read ending below one that does not is just a scale
+        that missed an add. The evidence is one of these:
+
+        - The belief is absent: an add that was not delivered here, or that left this scale out.
+        - The last change here was an add, it was not accepted, and no orphan is noted here. A lost reply may simply not have landed.
+        - No row here, and the item came through an add, not the seed. Every send leaves a row for each
+          scale configured then, so this scale joined the config later.
+
+        A seeded item, or anything a scale has been sent or shown holding, always counts.
         """
         rows = self._catalog.scale_state_rows(name)
         live = {i.id for i in self._catalog.list_items()}
+        added = self._catalog.ids_added_since_seed()
+        orphans = self._catalog.orphan_ids()
         expected: set[int] = set()
         for item in self._catalog.list_items(include_deleted=True):
             row = rows.get(item.id)
             if item.id not in live:
                 if row is not None and row["belief"] in ("present", "unknown"):
                     expected.add(item.id)
-            elif row is None or row["belief"] == "present":
+            elif row is None:
+                if item.id not in added:
+                    expected.add(item.id)
+            elif row["belief"] == "present":
                 expected.add(item.id)
             elif row["belief"] == "unknown":
-                lost = row["status"] in (ScaleStatus.UNKNOWN.value, ScaleStatus.MISMATCH.value)
-                if not (lost and self._logged_action(row["change_id"], item.id) == "add"):
+                accepted = row["status"] in (ScaleStatus.VERIFIED.value, ScaleStatus.ACCEPTED_NOT_VERIFIED.value)
+                add_missed = not accepted and name not in orphans.get(item.id, []) and self._logged_action(row["change_id"], item.id) == "add"
+                if not add_missed:
                     expected.add(item.id)
         return expected
 
@@ -999,7 +1065,7 @@ class ScaleConnectService:
         if blocked:
             words = (
                 f"{name} differs from the list. This would put placeholders at id {_id_ranges(blocked)}, and the catalog lists "
-                "those ids or a scale may still hold them. Nothing was sent. Reload it from the command line, or have a person look."
+                "those ids or a scale may still hold them. Nothing was sent. Settle those items to this scale in id order, reload it from the command line, or have a person look."
             )
             return [], [Drift(name, "fill_blocked", None, None, {}, None, words)]
         return fill, self._placeholder_clashes(name, fill, held)
@@ -1226,6 +1292,9 @@ class ScaleConnectService:
             return self._apply_locked(preview_id, acknowledge_warnings is True, tokens, requested_by)
 
     def _apply_locked(self, preview_id: str, acknowledged: bool, tokens: frozenset[str], requested_by: str | None) -> ChangeRecord:
+        restart = self.config_changed()
+        if restart:
+            raise ConfigChanged(restart)
         stored = self._catalog.load_preview(preview_id)
         if stored is None:
             raise PreviewNotFound(f"No preview with id {preview_id}.")
@@ -1992,6 +2061,14 @@ class ScaleConnectService:
                     self._record_state(scale_name, plan, status, record, change_id, at)
                 except Exception as exc:
                     problems.append(f"State for {scale_name}, PLU {difference.plu}: {exc.__class__.__name__}.")
+            if difference.action == "add" and (landed or unsettled):
+                # A scale this change left out never saw the item, so its read need not reach this id.
+                for scale in self._config.scales:
+                    if scale.name not in statuses:
+                        try:
+                            self._catalog.record_scale_state(difference.item_id, scale.name, ITEM_NOT_SENT, change_id, at, belief="absent")
+                        except Exception as exc:
+                            problems.append(f"State for {scale.name}, PLU {difference.plu}: {exc.__class__.__name__}.")
             if difference.action == _DELETE and landed:
                 # A scale this change left out still holds the item, so its id must wait for that scale too.
                 for scale in self._config.scales:
@@ -2061,7 +2138,9 @@ class ScaleConnectService:
         if earlier is not None and earlier["status"] in (ScaleStatus.UNKNOWN.value, ScaleStatus.MISMATCH.value):
             if self._logged_action(earlier["change_id"], item_id) in ("add", _DELETE):
                 return
-        new_and_absent = plan.difference.action == "add" and not plan.replace_orphan
+        # An add over an orphan noted on this scale is different. The orphan is still there.
+        orphan_here = plan.replace_orphan and scale_name in self._catalog.orphan_ids().get(item_id, [])
+        new_and_absent = plan.difference.action == "add" and not orphan_here
         self._catalog.record_scale_state(item_id, scale_name, status, change_id, at, belief="absent" if new_and_absent else None)
 
     # ------------------------------------------------------------ comparing
@@ -2223,6 +2302,9 @@ class ScaleConnectService:
         target = next((s for s in self._current_scales() if s.name == scale), None)
         if target is None:
             return refused("unknown_scale", f"No scale named {scale}.", "scale")
+        restart = self.config_changed()
+        if restart:
+            return refused("config_changed", restart)
         if target.write_enabled is not True and (take == "catalog" or target.read_enabled is not True):
             return refused("scale_not_write_enabled", f"{scale}: this scale cannot be contacted for this.", "scale")
         version = self._catalog.version()
@@ -2262,7 +2344,7 @@ class ScaleConnectService:
             clash = next((i for i in self._catalog.list_items() if i.plu == current.plu and i.id != item.id), None)
             if clash is not None:
                 return refused("duplicate_plu", f"PLU {current.plu} is already on id {clash.id} in the catalog.", "plu", drift=drift)
-            still_held = sorted(r["scale"] for r in self._catalog.deleted_still_held() if r["plu"] == current.plu)
+            still_held = sorted(r["scale"] for r in self._deleted_held() if r["plu"] == current.plu)
             moved_from = self._catalog.old_plus_in_use().get(current.plu, item.id)
             if still_held or moved_from != item.id:
                 message = f"PLU {current.plu} is not free, because a delete or a PLU change on it has not finished. Finish that first."
@@ -2500,6 +2582,9 @@ class ScaleConnectService:
         scale contact. If it differs, or nothing is known, it raises ReloadDifferences unless a
         person has seen that and passes accept_differences=True.
         """
+        restart = self.config_changed()
+        if restart:
+            raise ConfigChanged(restart)
         chosen = self._named_scales([scale])[0]
         if chosen.write_enabled is not True:
             message = f"{chosen.name}: writes are off for this scale, so a reload is refused. Nothing was sent."
@@ -2507,15 +2592,24 @@ class ScaleConnectService:
         with _apply_lock(self._lock_path):
             return self._reload_locked(chosen, (requested_by or "unknown").strip() or "unknown", accept_differences is True)
 
-    def _reload_differences(self, name: str, records: Sequence[Item]) -> tuple[list[ReloadDifference], tuple[int, ...]]:
-        """Where a reload would change what this scale last showed, and the ids no read has reached."""
+    def _read_is_stale(self, at: str) -> bool:
+        try:
+            return self._clock() - datetime.fromisoformat(at) > RELOAD_READ_MAX_AGE
+        except (TypeError, ValueError):
+            return True
+
+    def _reload_differences(self, name: str, records: Sequence[Item]) -> tuple[list[ReloadDifference], tuple[int, ...], str | None]:
+        """Where a reload would change what this scale last showed, the ids nothing recent is known about, and
+        the time of the newest read. An old read still says what the scale showed, so it is listed too."""
         reads = self._catalog.last_reads_for_scale(name)
         differences: list[ReloadDifference] = []
         not_known: list[int] = []
+        last_read_at = max((r["at"] for r in reads.values()), default=None)
         for record in records:
             read = reads.get(record.id)
-            if read is None:
+            if read is None or self._read_is_stale(read["at"]):
                 not_known.append(record.id)
+            if read is None:
                 continue
             held = read["record"]
             going = is_placeholder(record)
@@ -2529,23 +2623,21 @@ class ScaleConnectService:
                 words = f"Id {record.id}: PLU {_quoted(held.plu)} at {_quoted(held.price)} goes, and a placeholder takes its place."
                 differences.append(ReloadDifference(record.id, held.plu, {"plu": FieldDiff(held.plu, record.plu)}, read["at"], words))
                 continue
-            fields = {
-                n: FieldDiff(getattr(held, n), getattr(record, n))
-                for n in ("plu", "description", "price")
-                if getattr(held, n) != getattr(record, n)
-            }
+            fields = _field_differences(held, record)
+            fields.pop("timestamp", None)
             if fields:
-                listed = ", ".join(f"{n} {_quoted(d.before)} goes to {_quoted(d.after)}" for n, d in fields.items())
+                listed = ", ".join(f"{_FIELD_WORDS.get(n, n)} {_quoted(d.before)} goes to {_quoted(d.after)}" for n, d in fields.items())
                 differences.append(ReloadDifference(record.id, held.plu, fields, read["at"], f"Id {record.id}, PLU {_quoted(held.plu)}: {listed}."))
-        return differences, tuple(not_known)
+        return differences, tuple(not_known), last_read_at
 
     @staticmethod
-    def _reload_refusal(name: str, differences: Sequence[ReloadDifference], not_known: Sequence[int], total: int) -> str:
+    def _reload_refusal(name: str, differences: Sequence[ReloadDifference], not_known: Sequence[int], total: int, last_read_at: str | None) -> str:
         parts = [f"{name}: nothing was sent, and this scale was not contacted."]
-        if len(not_known) == total:
-            parts.append("Nothing is known about what it holds, because no read has reached it.")
-        elif not_known:
-            parts.append(f"Nothing is known about id {_id_ranges(not_known)}, because no read has reached them.")
+        limit = int(RELOAD_READ_MAX_AGE.total_seconds() // 60)
+        if not_known:
+            which = "what it holds" if len(not_known) == total else f"id {_id_ranges(not_known)}"
+            parts.append(f"Nothing is known about {which} now, because no read has reached it, or the last read is more than {limit} minutes old.")
+        parts.append(f"Its last read was at {last_read_at}." if last_read_at else "It has never been read.")
         if differences:
             oldest = min(d.read_at for d in differences)
             parts.append(f"A reload would change {len(differences)} ids from what it last showed, in a read as old as {oldest}.")
@@ -2568,9 +2660,9 @@ class ScaleConnectService:
             raise ValidationFailed(f"The catalog holds a record that cannot be sent, at id {errors[0].index}: {errors[0].message}", errors=errors)
         stamp = self._clock().strftime("%Y-%m-%d %H:%M:%S")
         records = [live.get(i) or placeholder_record(i, stamp) for i in range(1, top + 1)]
-        differences, not_known = self._reload_differences(name, records)
+        differences, not_known, last_read_at = self._reload_differences(name, records)
         if (differences or not_known) and not accept_differences:
-            raise ReloadDifferences(self._reload_refusal(name, differences, not_known, len(records)), differences, not_known)
+            raise ReloadDifferences(self._reload_refusal(name, differences, not_known, len(records), last_read_at), differences, not_known, last_read_at)
 
         backup_notes = self._backup_first_writes([scale], records, _RELOAD, actor)
         change_id = uuid.uuid4().hex
@@ -2603,11 +2695,11 @@ class ScaleConnectService:
         replies: tuple[str, ...] = ()
         statuses: dict[int, str] = {}
         try:
-            result, statuses, attempts, replies = self._reload_send(scale, records, top, differences, not_known)
+            result, statuses, attempts, replies = self._reload_send(scale, records, top, differences, not_known, last_read_at)
         except (NotWriteEnabled, NotReadEnabled):
-            result = ReloadResult(name, ScaleStatus.SKIPPED_NOT_WRITE_ENABLED.value, False, f"{name}: writes are off for this scale. Nothing was sent.", top_id=top, differences=tuple(differences), not_known=not_known)
+            result = ReloadResult(name, ScaleStatus.SKIPPED_NOT_WRITE_ENABLED.value, False, f"{name}: writes are off for this scale. Nothing was sent.", top_id=top, differences=tuple(differences), not_known=not_known, last_read_at=last_read_at)
         except Exception as exc:
-            result = ReloadResult(name, ScaleStatus.UNKNOWN.value, False, f"{name}: an unexpected problem ({exc.__class__.__name__}). The result is unknown. Check the scale.", top_id=top, differences=tuple(differences), not_known=not_known)
+            result = ReloadResult(name, ScaleStatus.UNKNOWN.value, False, f"{name}: an unexpected problem ({exc.__class__.__name__}). The result is unknown. Check the scale.", top_id=top, differences=tuple(differences), not_known=not_known, last_read_at=last_read_at)
 
         problems = self._reload_commit(name, records, live, known, statuses, change_id)
         scale_result = ScaleResult(
@@ -2642,26 +2734,35 @@ class ScaleConnectService:
         return replace(result, change_id=change_id)
 
     @staticmethod
-    def _reload_price_words(differences: Sequence[ReloadDifference], not_known: Sequence[int], *, changed: bool) -> str:
+    def _reload_price_words(differences: Sequence[ReloadDifference], not_known: Sequence[int], last_read_at: str | None, *, changed: bool) -> str:
         """Names the prices, from the last read, so a person can see what a reload did or may have done."""
         prices = [(d.plu, d.fields["price"]) for d in differences if d.plu is not None and "price" in d.fields]
         said = "changed" if changed else "may have changed"
-        parts = []
+        others = sorted(d.item_id for d in differences if not set(d.fields) <= {"price"} and d.plu is not None)
+        parts = [f"The last read of this scale before this was at {last_read_at}." if last_read_at else "This scale had never been read."]
         if prices:
             listed = "; ".join(f"PLU {_quoted(plu)} from {_quoted(diff.before)} to {_quoted(diff.after)}" for plu, diff in prices)
             parts.append(f"Prices that {said} from what this scale last showed: {listed}.")
         elif not not_known:
             parts.append("No price differs from what this scale last showed.")
+        if others:
+            parts.append(f"Other fields {said} at id {_id_ranges(others)}. See differences.")
         if not_known:
-            parts.append(f"Nobody knew what it held at id {_id_ranges(not_known)}, so a price there may have changed with no name here.")
+            parts.append(f"Nobody knew what it held now at id {_id_ranges(not_known)}, so a price there may have changed with no name here.")
         return " ".join(parts)
 
     def _reload_send(
-        self, scale: ScaleConfig, records: Sequence[Item], top: int, differences: Sequence[ReloadDifference] = (), not_known: tuple[int, ...] = ()
+        self,
+        scale: ScaleConfig,
+        records: Sequence[Item],
+        top: int,
+        differences: Sequence[ReloadDifference] = (),
+        not_known: tuple[int, ...] = (),
+        last_read_at: str | None = None,
     ) -> tuple[ReloadResult, dict[int, str], int, tuple[str, ...]]:
         """Identity, the full send, then one read if every record was accepted. Each id's status comes back too."""
         name = scale.name
-        known = dict(differences=tuple(differences), not_known=not_known)
+        known = dict(differences=tuple(differences), not_known=not_known, last_read_at=last_read_at)
         placeholders = tuple(r.id for r in records if is_placeholder(r))
         client = self._scale_factory(scale, self._settings, sleep=self._sleep)
         identity = client.identify()
@@ -2683,7 +2784,7 @@ class ScaleConnectService:
             result = ReloadResult(name, report.status.value, False, report.message, top_id=top, not_accepted=not_accepted, may_be_frozen=frozen, **known)
             return result, statuses, 0, report.replies
         base = dict(top_id=top, accepted=accepted, placeholders=placeholders, not_accepted=not_accepted, **known)
-        may_have = self._reload_price_words(differences, not_known, changed=False)
+        may_have = self._reload_price_words(differences, not_known, last_read_at, changed=False)
         if not_accepted:
             message = (
                 f"{name}: the scale accepted {accepted} of {len(records)} records, and did not take id {_id_ranges(not_accepted)}. "
@@ -2717,7 +2818,7 @@ class ScaleConnectService:
         else:
             status = ScaleStatus.VERIFIED.value
             message = f"{name}: the scale accepted all {len(records)} records, and reading them back matched every field. Ids 1 to {top} now match the catalog."
-        message = f"{message} {self._reload_price_words(differences, not_known, changed=not differs)}"
+        message = f"{message} {self._reload_price_words(differences, not_known, last_read_at, changed=not differs)}"
         if placeholders:
             message = f"{message} Id {_id_ranges(placeholders)} got placeholders."
         if left_above:

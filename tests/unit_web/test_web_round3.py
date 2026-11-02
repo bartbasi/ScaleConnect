@@ -140,10 +140,10 @@ def test_settling_a_scale_behind_a_plu_change_is_refused_in_plain_words_with_a_r
     r = web3.post("/api/settle/preview", {"scale": "B", "take": take, "plu": "1999"}).json()
     assert r["ok"] is False and r["errors"][0]["code"] == code
     message = r["errors"][0]["message"]
-    assert "still on the old PLU" in message and "Repeat the PLU change" in message
-    assert "Change this item" not in message and "id " not in message
+    assert "did not finish on this scale" in message and "Repeat the PLU change" in message
+    assert "Change this item" not in message and not re.search(r"\bid \d", message)
     assert r["drift"][0]["unfinished_move"] is True and r["drift"][0]["can_ack"] is False
-    assert r["repeat"] == {"change": {"action": "edit", "target_plu": "1999", "plu": "1999"}, "plu": "1999"}
+    assert r["repeat"] == {"change": {"action": "edit", "target_plu": "1999", "plu": "1999"}, "plu": "1999", "old": ["1001"]}
     assert len(web3.env.writes("B")) == sent_before, "a refused settle writes nothing"
     assert web3.client.get("/api/item/1999").json()["scales"][1]["flag"] == "unfinished"
 
@@ -159,7 +159,7 @@ def test_the_other_settle_refusals_keep_their_own_words(web):
 def test_plain_words_for_the_not_finished_refusals():
     for code in ("plu_change_not_finished", "plu_edit_held"):
         text = words.plain_error({"code": code, "message": "x", "index": 0, "field": "plu"}, True)["message"]
-        assert "Repeat the PLU change" in text and "—" not in text and "--" not in text
+        assert "Repeat the PLU change" in text and "\u2014" not in text and "--" not in text
     plain = words.plain_error({"code": "plu_edit_held", "message": "x", "index": 0, "field": "plu"}, False)["message"]
     assert "Settling cannot change a PLU" in plain
 
@@ -214,7 +214,7 @@ def test_the_script_builds_a_repeat_with_no_price_or_name():
     result = SCRIPT.split("function pluResult")[1].split("function renderResult")[0]
     assert "again.price" not in result and "again.description" not in result and "f.price" not in result
     assert "{ action: 'edit', target_plu: pc.before, plu: pc.after }" in result
-    assert "{ action: 'delete', target_id: c.item_id }" in result
+    assert "{ action: 'delete', target_plu: gone }" in result and "target_id" not in result
     # The sentence the review shows is true: only the PLU is sent, and a scale already on it is written again
     box = SCRIPT.split("function repeatBox")[1].split("function repeatTick")[0]
     assert "This sends only the PLU. Price and name are not changed." in box
@@ -247,7 +247,7 @@ def test_the_home_screen_lists_an_unfinished_delete_and_a_repeat_finishes_it(web
     assert web3.client.get("/api/item/1002").status_code == 404
     card = web3.client.get("/api/unfinished").json()["items"][0]
     assert card["kind"] == "delete" and card["plu"] == "1002" and card["scales"] == ["B"]
-    assert card["repeat"] == {"action": "delete", "target_id": 2}
+    assert card["repeat"] == {"action": "delete", "target_plu": "1002"}, "a delete is repeated by the PLU it was about"
     assert "assume PLU 1002 still works on B" in card["more"] and card["button"] == "Repeat the delete of PLU 1002"
     # The page sends that repeat. It still needs a review, and the tick.
     p = web3.preview([card["repeat"]], read=True).json()
@@ -280,19 +280,45 @@ def test_an_unfinished_delete_on_a_result_says_the_old_plu_may_still_work(web3):
     assert "Repeat the delete" in script
 
 
-def test_a_repeat_of_a_delete_may_name_the_id_and_nothing_else(web3):
+def test_a_repeat_of_a_delete_names_the_plu_and_the_page_never_sends_an_id(web3):
     web3.login()
-    for bad in ({"action": "delete", "target_id": "2"}, {"action": "delete", "target_id": 501},
-                {"action": "delete", "target_id": 0}, {"action": "delete", "target_id": True},
-                {"action": "edit", "target_id": 1, "price": "1.00"}):
+    for bad in ({"action": "delete", "target_id": 2}, {"action": "delete", "target_id": "2"},
+                {"action": "edit", "target_id": 1, "price": "1.00"},
+                {"action": "delete", "target_plu": "1002", "price": "1.00"}):
         p = web3.preview([bad]).json()
         assert p["ok"] is False, bad
-    p = web3.preview([{"action": "delete", "target_id": 2, "price": "1.00"}]).json()
-    assert p["ok"] is False
-    ok = web3.preview([{"action": "delete", "target_id": 2}]).json()
+    ok = web3.preview([{"action": "delete", "target_plu": "1002"}]).json()
     assert ok["ok"] and ok["differences"][0]["before"]["plu"] == "1002"
     assert web3.env.silent("A", "B", "C")
 
+
+def test_an_old_repeat_of_a_delete_cannot_hit_the_item_that_took_the_id(web3):
+    """N1. A delete is partly done, then finished, then an add takes the id. The old result's repeat must refuse."""
+    web3.login()
+    old = partial_delete(web3)
+    old_repeat = {"action": "delete", "target_plu": old["changes"][0]["before"]["plu"]}
+    assert old_repeat == {"action": "delete", "target_plu": "1002"}
+    card = web3.client.get("/api/unfinished").json()["items"][0]
+    run(web3, [card["repeat"]])
+    assert web3.client.get("/api/unfinished").json()["items"] == []
+    _, added = run(web3, [{"action": "add", "plu": "1888", "description": "Brand New Product", "price": "5.00"}])
+    assert [r["status"] for r in added["rows"]] == ["verified"] * 3
+    assert web3.env.catalog.get_by_plu("1888").id == 2, "the new product took the id"
+    before = {n: web3.env.fakes[n].item(2) for n in "ABC"}
+    p = web3.preview([old_repeat], read=True).json()
+    assert p["ok"] is False and p["errors"][0]["code"] == "item_not_found"
+    assert web3.client.get("/api/item/1888").json()["item"]["description"] == "Brand New Product"
+    assert {n: web3.env.fakes[n].item(2) for n in "ABC"} == before, "nothing was sent to any scale"
+    # Even a stale tab that still holds the id based repeat cannot send it from this page
+    assert web3.preview([{"action": "delete", "target_id": 2}]).json()["ok"] is False
+
+
+def test_the_review_refuses_a_repeat_that_shows_another_item():
+    review = SCRIPT.split("function renderReview")[1].split("function renderResult")[0]
+    assert "wrongItem" in review and "This is not the item this repeat was about." in review
+    assert "(d.before || {}).plu" in review and "(d.after || {}).plu" in review
+    assert "if (rep && !wrongItem) { holder.appendChild(repeatBox(rep)); }" in review
+    assert "target_id" not in SCRIPT
 
 def test_nothing_unfinished_says_nothing(web):
     assert web.client.get("/api/unfinished").json() == {"items": []}
@@ -325,13 +351,103 @@ def test_the_script_lists_unfinished_work_and_asks_for_the_tick_on_every_repeat(
     assert "/api/unfinished" in SCRIPT and "unfinishedBoxes" in SCRIPT
     assert "function startRepeat" in SCRIPT and "repeat: meta" in SCRIPT
     review = SCRIPT.split("function renderReview")[1].split("function renderResult")[0]
-    assert "if (rep && rep.kind === 'plu_change' && !repTicked)" in review, "a repeat has a tick even if the library gave none"
+    assert "rep.kind === 'plu_change' && !repTicked && !ownLine" in review, "a repeat has a tick even if the library gave none"
     assert "tick('repeat', 'r:repeat'" in review
     item = SCRIPT.split("function renderItem")[1].split("function renderEdit")[0]
     assert "s.flag === 'unfinished' && s.repeat" in item
     assert item.index("s.flag === 'unfinished'") < item.index("else if (s.can_fix)")
     assert "Repeat the PLU change" in item
 
+
+# ---------------------------------------------------------------- N2: the words say what sending really does
+
+
+def lost_reply_move(make_web):
+    """A PLU change whose reply was lost. The scale took it, nobody knows, and the catalog still says 1001."""
+    web = make_web({"A": True}, reply_timeout_seconds=0.4)
+    web.env.fakes["A"].stall("GP", times=1, apply=True)
+    web.login()
+    _, done = run(web, MOVE, ack=True)
+    assert done["rows"][0]["status"] == "unknown"
+    assert web.env.fakes["A"].item(1)[2] == "1999" and web.env.catalog.get_by_plu("1001") is not None
+    return web
+
+
+def test_after_a_lost_reply_the_card_names_the_plu_the_repeat_sends_and_the_one_that_stops(make_web):
+    web = lost_reply_move(make_web)
+    card = web.client.get("/api/unfinished").json()["items"][0]
+    assert card["repeat"] == {"action": "edit", "target_plu": "1001", "plu": "1999"}
+    assert card["target"] == "1999" and card["stopping"] == ["1001"]
+    assert card["button"] == "Repeat the PLU change to 1999"
+    assert card["text"] == "The PLU change from 1001 to 1999 may have landed on A, and nobody has confirmed it."
+    assert "A may be on 1999 or on 1001" in card["more"] and "both may work" in card["more"]
+    assert "1001 still works" not in card["more"] and "change to 1001" not in card["text"]
+    row = web.client.get("/api/item/1001").json()["scales"][0]
+    assert row["flag"] == "unfinished" and row["can_fix"] is False
+    assert row["repeat"] == card["repeat"] and row["repeat_meta"] == {"plu": "1999", "old": ["1001"]}
+    assert "may have landed" in row["text"] and "1999" in row["text"] and "still on 1001" in row["text"]
+
+
+def test_after_a_lost_reply_the_repeat_review_and_the_send_agree(make_web):
+    web = lost_reply_move(make_web)
+    card = web.client.get("/api/unfinished").json()["items"][0]
+    p = web.preview([card["repeat"]], read=True).json()
+    assert p["ok"]
+    d = p["differences"][0]
+    assert d["fields"]["plu"] == {"before": "1001", "after": "1999"} and d["after"]["plu"] == "1999"
+    assert any(w["code"] == "plu_change" and w["requires_ack"] for w in p["warnings"])
+    assert web.send(p["preview_id"], warnings=False).status_code == 400
+    assert web.send(p["preview_id"], warnings=True).status_code == 200
+    done = web.wait_finished(p["preview_id"])
+    assert [r["status"] for r in done["rows"]] == ["verified"]
+    assert web.env.fakes["A"].item(1)[1:3] == ("1999", "1999")
+    assert web.client.get("/api/unfinished").json()["items"] == []
+
+
+def test_a_settle_refused_after_a_lost_reply_names_the_plu_a_repeat_sends(make_web):
+    web = lost_reply_move(make_web)
+    r = web.post("/api/settle/preview", {"scale": "A", "take": "scale", "plu": "1001"}).json()
+    assert r["ok"] is False and r["errors"][0]["code"] == "plu_change_not_finished"
+    assert r["repeat"] == {"change": {"action": "edit", "target_plu": "1001", "plu": "1999"}, "plu": "1999", "old": ["1001"]}
+
+
+def test_plu_roles_say_which_plu_every_scale_gets_and_which_stops():
+    assert words.plu_roles("1999", ("1001",), {"action": "edit", "target_plu": "1999", "plu": "1999"}) == ("1999", ["1001"])
+    assert words.plu_roles("1001", ("1999",), {"action": "edit", "target_plu": "1001", "plu": "1999"}) == ("1999", ["1001"])
+    assert words.plu_roles("1001", ("1999",), {"action": "edit", "target_plu": "1001"}) == ("1001", ["1999"])
+
+
+def test_the_script_takes_the_plu_that_stops_from_the_server_and_never_guesses_it():
+    assert "meta.old" in SCRIPT and "s.repeat_meta" in SCRIPT and "old: c.stopping" in SCRIPT
+    assert "plu: c.target" in SCRIPT and "plu: c.plu" not in SCRIPT
+
+
+# ---------------------------------------------------------------- the line under The scales, and a scale that did not answer
+
+
+def test_a_warning_that_names_a_scale_is_marked_so_the_review_does_not_say_nothing_is_different(make_web):
+    web, add = fill_needed(make_web)
+    web.login()
+    p = web.preview(add, read=True).json()
+    gap = next(w for w in p["warnings"] if w["code"] == "gap_filled")
+    assert gap["scales_named"] == ["B"]
+    other = [w for w in p["warnings"] if w["code"] != "gap_filled"]
+    assert all("B" not in w["scales_named"] or "B" in w["message"] for w in other)
+    review = SCRIPT.split("function renderReview")[1].split("function renderResult")[0]
+    assert "Read the note above." in review and "scales_named" in review
+
+
+def test_a_scale_that_did_not_answer_blocks_the_send_and_says_so_on_its_line(make_web):
+    web = make_web({"A": True}, fake_options=dict(freeze_lp_at_id=1), reply_timeout_seconds=0.3, connect_attempts=1)
+    web.login()
+    p = web.preview([{"action": "edit", "target_plu": "1001", "price": "10.50"}], read=True).json()
+    sick = next(w for w in p["warnings"] if w["code"] == "scale_read_failed")
+    assert sick["may_be_frozen"] is True and sick["scales_named"] == ["A"]
+    review = SCRIPT.split("function renderReview")[1].split("function renderResult")[0]
+    assert "frozenSeen" in review and "Did not answer. Do not send. Tell Bart." in review
+    assert "A scale did not answer, and sending would read it again." in review
+    assert "blocked = true;" in review.split("if (frozenSeen) {")[1].split("}")[0]
+    web.env.fakes["A"].reboot()
 
 # ---------------------------------------------------------------- gaps, short reads, and a delete that may have landed
 
@@ -473,7 +589,7 @@ def test_script_shows_the_tick_and_note_for_a_drift_a_person_may_acknowledge():
 def test_table_and_reload_errors_have_plain_short_words(code):
     text = words.plain_error({"code": code, "message": "library words " * 5, "index": 0, "field": "scale"})["message"]
     assert "library words" not in text
-    assert "—" not in text and "–" not in text and "--" not in text
+    assert "\u2014" not in text and "\u2013" not in text and "--" not in text
     assert len(text) < 260 and text.endswith(".")
     assert "person" in text or "review" in text.lower() or "Review" in text or "Go back" in text
 
@@ -482,7 +598,7 @@ def test_every_table_row_word_names_the_scale_and_says_nothing_was_sent():
     for kind, entry in words.TABLE_DRIFT_WORDS.items():
         assert "Nothing was sent" in entry["row"], kind
         for value in entry.values():
-            assert "—" not in value and "--" not in value, kind
+            assert "\u2014" not in value and "--" not in value, kind
         assert "{scale}" in entry["plain"], kind
 
 
@@ -536,6 +652,6 @@ def test_staff_doc_covers_the_new_screens_and_the_scale_differs_message():
 @pytest.mark.parametrize("name", ["README.md", "docs/STAFF.md", "docs/INSTALL.md"])
 def test_docs_have_no_dashes_and_no_addresses(name):
     text = (DOCS / name).read_text(encoding="utf-8")
-    assert "—" not in text and "–" not in text
+    assert "\u2014" not in text and "\u2013" not in text
     assert not re.search(r"(?<![\w-])--(?![\w-])", text.replace("---", ""))
     assert not re.search(r"\b192\.168\.\d+\.\d+\b", text)

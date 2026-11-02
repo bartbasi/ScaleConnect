@@ -25,7 +25,7 @@ from mcp.shared._httpx_utils import create_mcp_http_client
 from mcp_types import Implementation
 
 from fake_scale import FakeScale
-from scaleconnect.mcp_server import main
+from scaleconnect.mcp_server import build_server, main
 from scaleconnect.service import ScaleConnectService
 from service_env import SEED, assert_wire_clean, seeded_catalog_file
 
@@ -541,3 +541,43 @@ def test_a_delete_and_a_plu_change_end_to_end_over_real_stdio(tmp_path, template
     finally:
         fake.stop()
         fake.assert_clean()
+
+
+def test_a_scale_added_to_the_real_config_file_refuses_writes_and_list_scales_shows_it(tmp_path, template_root):
+    """Not a stand in: the file really changes under a service that loaded it. No scale gets anything."""
+    a = FakeScale(post_write_refusal_seconds=0.0, serial="TEST-A").start()
+    b = FakeScale(post_write_refusal_seconds=0.0, serial="TEST-B").start()
+    service = None
+    try:
+        a.preload(*[tuple(i.to_fields()) for i in SEED])
+        port = free_port()
+        folder = seeded_folder(tmp_path, template_root)
+        config = write_config(folder, {"A": a}, port=port)
+        service = ScaleConnectService.open(config)
+        server = build_server(service)
+
+        async def call(name, **arguments):
+            async with Client(server) as client:
+                return await client.call_tool(name, arguments)
+
+        change = {"action": "edit", "target_plu": "1001", "price": "11.00"}
+        before = anyio.run(lambda: call("scale_list_scales")).structured_content
+        assert before["config_changed"] is False
+        preview = anyio.run(lambda: call("scale_preview_changes", changes=[change], read_scales=False)).structured_content
+        assert preview["ok"] is True
+
+        write_config(folder, {"A": a, "B": b}, port=port)
+
+        listed = anyio.run(lambda: call("scale_list_scales")).structured_content
+        assert listed["config_changed"] is True and "CONFIG CHANGED" in listed["summary"]
+        assert "restart the web page and the MCP server together" in listed["next_step"]
+        applied = anyio.run(lambda: call("scale_apply_changes", preview_id=preview["preview_id"]))
+        assert applied.is_error and applied.structured_content["error"]["code"] == "config_changed"
+        refused = anyio.run(lambda: call("scale_preview_changes", changes=[change])).structured_content
+        assert refused["ok"] is False and "config_changed" in [e["code"] for e in refused["errors"]]
+        assert a.nothing_received and b.nothing_received
+    finally:
+        if service is not None:
+            service.close()
+        a.stop()
+        b.stop()

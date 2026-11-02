@@ -76,7 +76,17 @@ claude mcp add --transport http scaleconnect http://<STORE_HOST>:<PORT>/mcp --sc
 
 Check it with `claude mcp list`, then `claude mcp get scaleconnect`.
 
-An apply can take minutes. If Claude Code gives up on a long call first, raise its `MCP_TOOL_TIMEOUT` setting (in milliseconds). A client giving up does not stop the change: it finishes and logs each scale's result, and `scale_get_change` with the preview id finds it.
+An apply can take minutes. These times were measured on November 2, 2026, through this server on the real scales. They are single measurements, not limits.
+
+| Call | Scales | Measured |
+|---|---|---|
+| `scale_compare_scales` | Three | 97 to 102 seconds |
+| `scale_preview_changes` with a read | Three | 95 seconds |
+| `scale_apply_changes`, one low id item | Three | 149 seconds |
+| `scale_preview_changes` with a read, at a high id | One | About 29 seconds |
+| `scale_apply_changes`, at a high id | One | About 69 seconds |
+
+If Claude Code gives up on a long call first, raise its `MCP_TOOL_TIMEOUT` setting (in milliseconds). A client giving up does not stop the change: it finishes and logs each scale's result, and `scale_get_change` with the preview id finds it. Claude must not apply again.
 
 ## The tools
 
@@ -109,6 +119,7 @@ There is no reload tool. `scaleconnect reload` is for a person at the command li
 - Drift means a scale's record differs from the catalog. It needs the exact tokens in `acknowledge_drift`. A token names one scale, one id and what that scale held. Drift that blocks an add cannot be acknowledged, and neither can an id that holds another product. `next_step` does not write out the tokens or the call, and says not to apply while something blocks.
 - `scale_preview_changes` reads the scales by default, so the person sees drift before anything is written. The library's own default is not to read. Without the read, apply would write to the clean scales and refuse the drifted one, and that is harder to undo.
 - Input is strict. A price sent as a number, an unknown key, or a raw field is refused with nothing sent.
+- If the config file changes while the server runs in a way it has not loaded, such as a scale added or turned on, every preview, settle and apply refuses with `config_changed`, with nothing sent. `next_step` says not to retry, and to ask the person to restart the web page and the MCP server together. `scale_list_scales` shows it, in `config_changed` and in the summary.
 - A preview and `scale_apply_changes` are the only way to change a scale. `next_step` never suggests sending to a scale another way. After a lost reply it says not to resend. It says to read the scale, tell the person, and make a new preview only if they agree.
 - A read can freeze a real scale, and a preview and an apply both read. So Claude reads only when it has a reason, and does not repeat a read. See "A scale that may have frozen".
 
@@ -159,7 +170,7 @@ The tools `scale_compare_scales`, `scale_read_items`, `scale_preview_changes`, `
 
 `scale_list_scales` lists in `unfinished` each delete and PLU change that some scale has not confirmed, per scale. It comes from the catalog with no scale contact, so it says what may be so. The summary has a `Not finished:` line for each.
 
-Each row has `repeat`, the change that finishes it. Claude shows the person. For each one they agree to, it calls `scale_preview_changes` with that `repeat` as the one change. For a delete it also sets `scales` to that scale. For a PLU change it leaves `scales` out, because a change to one scale leaves the others differing from the catalog by the timestamp. Then it shows that preview, and applies only if they agree.
+Each row has `repeat`, the change that finishes it. A delete's `repeat` has `expected_plu`, so it cannot hit whatever holds that id by then. If that id now holds another PLU, the preview refuses with `target_changed`, nothing changes, and `next_step` says to tell the person. Only a delete takes `expected_plu`. An add or edit that gives it gets `invalid_change`. Claude shows the person. For each one they agree to, it calls `scale_preview_changes` with that `repeat` as the one change. For a delete it also sets `scales` to that scale. For a PLU change it leaves `scales` out, because a change to one scale leaves the others differing from the catalog by the timestamp. Then it shows that preview, and applies only if they agree.
 
 ### Deleting an item
 
@@ -290,7 +301,7 @@ Next: Tell the person which scales did not take this change. Tell the person whi
 
 **6. If the call times out,** do not apply again. Call `scale_get_change` with `{"preview_id": "abc123"}`. `in_progress` means it is still running or the process died, so look again shortly.
 
-**7. If a scale reports `unknown`,** do not resend on your own. Unless `scales_may_be_frozen` names it, call `scale_read_items` with `{"plus": ["4001", "4002", "4003"]}`, about 30 seconds per scale, to see what each scale really holds, and tell the person. Then make a new preview for anything that did not land, if they agree.
+**7. If a scale reports `unknown`,** do not resend on your own. Unless `scales_may_be_frozen` names it, call `scale_read_items` with `{"plus": ["4001", "4002", "4003"]}`, which reads each whole table, as a comparison does, to see what each scale really holds, and tell the person. Then make a new preview for anything that did not land, if they agree.
 
 ## Worked example: deleting an item
 
@@ -334,7 +345,7 @@ SCALE3: skipped_not_write_enabled. Writes are off for this scale in the config. 
 Next: Tell the person which scales have writes off. They still hold the old values. Only a person can turn writes on. A scale that did not take this delete may still answer to the old PLU, and the id and PLU stay held. To try again, once that scale can take it and a person agrees, call scale_preview_changes with that same delete, and use scales to name that scale.
 ```
 
-**6. To reach SCALE3 later,** once writes are on and the person agrees, preview `{"changes": [{"action": "delete", "target_id": 9}], "scales": ["SCALE3"]}`. `scale_list_scales` shows that change as `repeat`. It works even though the item has left the catalog. Naming one scale adds the warning `scale_not_targeted`, and `acknowledge_warnings` covers both.
+**6. To reach SCALE3 later,** once writes are on and the person agrees, preview `{"changes": [{"action": "delete", "target_id": 9, "expected_plu": "4002"}], "scales": ["SCALE3"]}`. `scale_list_scales` shows that change as `repeat`. It works even though the item has left the catalog. Naming one scale adds the warning `scale_not_targeted`, and `acknowledge_warnings` covers both.
 
 ## Worked example: changing a PLU
 
