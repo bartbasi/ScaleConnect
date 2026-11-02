@@ -84,6 +84,19 @@ Why the echo happens, as far as we can tell: the scale reads `count` lines from 
 
 ## 3. Read items: `LP`
 
+**A read can freeze a scale.** Seen four times, always the same way: the scale's TCP acknowledges the message, no reply comes, my FIN is never acknowledged, and the scale drops off the network until it is rebooted. The scale can keep weighing while this is happening.
+
+| Scale and date | State of its items | Where it stopped |
+|---|---|---|
+| FRONT, Nov 1 | Right after `EP` tests | First block |
+| FRONT, Nov 2 | Damaged. The read before it gave blank records | First block |
+| FRONT, Nov 2 | After a product reset, with one item at id 65 | First block |
+| COUNTER, Nov 2 | Old records, not written since an import renumbered the items | Asking for ids 41 to 45 |
+
+Reads worked every time on tables that a full send had just written, with ids 1 to N all filled: FRONT at 484 and 500 records, KITCHEN at 485, COUNTER at 485. Empty slots after the last item are fine. The last block is short and then `LP00End` comes.
+
+COUNTER's freeze was cured by rewriting ids 1 to 484 with no reset. What was wrong with its old records is unknown. A scale fresh from a product reset must be reloaded with writes only before anything reads it. (Reply, capture. notebook "November 2")
+
 No `RI` or `bX01XX` needed. Connect and go.
 
 1. Send `LP\t\n6\r`.
@@ -192,6 +205,8 @@ Reply is immediate. After an accepted item plus `GPF0`, the scale does not answe
 
 **Do not send any `E` message to a production scale. Keep delete behind `not_available`.** These are all our data.
 
+After the `EP` tests below, FRONT dropped off the network, then froze within seconds of every reboot until its products were factory reset. Either those messages or the odd test records stored on it caused that. We can't separate the two. No more `E` tests without a fresh decision from Bart.
+
 All framed, on fresh connections, aimed at a throwaway item. (Reply. notebook "6:00 PM" and "Correction and study of the EP timing", p1 capture streams 61 to 67.)
 
 | Sent | Reply | Time |
@@ -237,6 +252,10 @@ The connection stays open and `CX` works after. A full read after `DP` was ident
 ### Tried and closed, so unknown
 
 `ZZ`, `RP`, `TP`, `OP`, `QP`, `BP`, `XP`, plain `GetHORA`. (Reply)
+
+## Ids can differ between scales
+
+The scale replaces a record by id. ScaleLink's import appears to renumber products, because its file has no ids (`SCALELINK_FILE.md`). A scale that misses the next full send keeps the old order. Each one item send then lands on another product. Seen on COUNTER on November 2: same products up to id 24, different products from id 25, and one product confirmed lost. Never assume a catalog id matches a scale. Read that scale's own record first. A full send of ids 1 to N puts the scale back in step. (Read, capture, Bart's check at the scale. notebook "November 2")
 
 ## 8. The record
 
