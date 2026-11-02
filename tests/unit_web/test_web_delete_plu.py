@@ -1,4 +1,4 @@
-﻿"""The page's delete flow, PLU change flow, new refusals and the frozen scale notice.
+"""The page's delete flow, PLU change flow, new refusals and the frozen scale notice.
 
 Fake scales on localhost only. Every item is made up. The page script is plain JavaScript and
 there is no JavaScript runner here, so what the script shows is checked in two ways: the data
@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from scaleconnect.models import ScaleResult
 from scaleconnect.web import words
 from scaleconnect.web import __main__ as web_main_module
 
@@ -237,7 +238,7 @@ def test_a_scale_that_is_marked_lagging_says_repeat_that_edit(web3):
     first = web3.wait_finished(p["preview_id"])
     assert first["outcome"] == "partial"
     assert {row["scale"]: row["status"] for row in first["rows"]} == {"A": "verified", "B": "rejected", "C": "verified"}
-    # The data the script needs to show "Repeat that edit"
+    # The data the script needs to show "Repeat the PLU change"
     assert first["changes"][0]["fields"]["plu"] == {"before": "1001", "after": "1999"}
     assert first["success"] is False
     web3.env.fakes["B"].clear_faults()
@@ -250,7 +251,7 @@ def test_a_scale_that_is_marked_lagging_says_repeat_that_edit(web3):
     assert drift[0]["unfinished_move"] is True and drift[0]["can_ack"] is False and drift[0]["ack_token"] is None
     plain = drift[0]["plain"]
     assert "earlier PLU change did not finish" in plain["plain"]
-    assert "Repeat that edit" in plain["more"]
+    assert "Repeat the PLU change" in plain["more"]
     assert "Call Bart" not in plain["more"]
 
     # Sending it anyway is refused for B, and the result row says to repeat the earlier edit
@@ -258,7 +259,7 @@ def test_a_scale_that_is_marked_lagging_says_repeat_that_edit(web3):
     second = web3.wait_finished(later["preview_id"])
     rows = {row["scale"]: row for row in second["rows"]}
     assert rows["B"]["status"] == "drift_refused"
-    assert "Repeat that edit" in rows["B"]["text"] and "Call Bart" not in rows["B"]["text"]
+    assert "Repeat the PLU change" in rows["B"]["text"] and "Call Bart" not in rows["B"]["text"]
     assert web3.env.fakes["B"].item(1)[2] == "1001"
 
     # Repeating the same edit finishes it
@@ -274,11 +275,12 @@ def test_a_scale_that_is_marked_lagging_says_repeat_that_edit(web3):
 
 def test_the_script_offers_repeat_that_edit_when_a_plu_change_did_not_finish_everywhere():
     result = SCRIPT.split("function pluResult")[1].split("function renderResult")[0]
-    assert "Repeat that edit" in result
+    assert "Repeat the PLU change" in result
     assert "r.status === 'verified'" in result
-    assert "repeat: { before: pc.before, after: pc.after }" in result
+    assert "kind: 'plu_change', plu: pc.after, old: [pc.before]" in result
     review = SCRIPT.split("function renderReview")[1].split("function renderResult")[0]
-    assert "draft.repeat" in review and "Finish the PLU change from" in review and "'r:repeat'" in review
+    assert "draft.repeat" in review and "repeatBox(rep)" in review and "'r:repeat'" in review
+    assert "Finish the PLU change to" in SCRIPT
     assert "target_plu: pc.before, plu: pc.after" in result
     assert "may not have finished on every scale" in result
 
@@ -305,7 +307,7 @@ def test_a_read_with_no_reply_says_the_scale_may_need_a_reboot_in_the_review(mak
     p = web.preview([{"action": "edit", "target_plu": "1001", "price": "10.50"}], read=True).json()
     assert p["ok"]
     sick = [w for w in p["warnings"] if w["code"] == "scale_read_failed"]
-    assert sick and sick[0]["reboot"] is True
+    assert sick and sick[0]["may_be_frozen"] is True
     assert p["scales_read"] == []
     assert "REBOOT = 'The scale did not answer. It may need a reboot. Tell Bart.'" in SCRIPT
     web.env.fakes["A"].reboot()
@@ -316,7 +318,7 @@ def test_a_read_with_no_reply_says_the_scale_may_need_a_reboot_in_the_result(mak
     web.login()
     p, done = web.change_and_wait([{"action": "edit", "target_plu": "1001", "price": "10.50"}])
     row = done["rows"][0]
-    assert row["status"] == "read_failed" and row["reboot"] is True
+    assert row["status"] == "read_failed" and row["may_be_frozen"] is True
     assert "Nothing was sent" in row["now"]
     assert web.env.writes("A") == []
     web.env.fakes["A"].reboot()
@@ -327,7 +329,7 @@ def test_a_check_now_with_no_reply_says_the_scale_may_need_a_reboot(make_web):
     web.login()
     r = web.post("/api/check", {"plu": "1001"}).json()
     scale = r["scales"][0]
-    assert scale["status"] != "read" and scale["reboot"] is True
+    assert scale["status"] != "read" and scale["may_be_frozen"] is True
     assert "message" not in scale, "no raw scale messages reach the page"
     assert scale["text"].startswith("A: ")
     web.env.fakes["A"].reboot()
@@ -336,12 +338,15 @@ def test_a_check_now_with_no_reply_says_the_scale_may_need_a_reboot(make_web):
 def test_a_good_read_and_other_failures_do_not_claim_a_reboot(web):
     web.login()
     good = web.post("/api/check", {"plu": "1001"}).json()["scales"][0]
-    assert good["status"] == "read" and good["reboot"] is False
-    other = words.read_row("A", "wrong_scale", "A: the serial did not match.")
-    assert other["reboot"] is False and "not the scale it should be" in other["text"]
-    assert words.may_need_reboot("The scale may have frozen, and may need a reboot.") is True
-    assert words.may_need_reboot("The scale refused it.") is False
-    assert words.may_need_reboot(None) is False
+    assert good["status"] == "read" and good["may_be_frozen"] is False
+    other = words.read_row("A", "wrong_scale", False)
+    assert other["may_be_frozen"] is False and "not the scale it should be" in other["text"]
+    assert words.read_row("A", "read_failed", True)["may_be_frozen"] is True
+    # Words in a message mean nothing. Only the library's flag does.
+    said = ScaleResult("A", "read_failed", "The scale may have frozen, and may need a reboot.")
+    assert words.scale_row(said)["may_be_frozen"] is False
+    assert words.scale_row(ScaleResult("A", "read_failed", "x", may_be_frozen=True))["may_be_frozen"] is True
+    assert not hasattr(words, "may_need_reboot")
 
 
 # ---------------------------------------------------------------- words

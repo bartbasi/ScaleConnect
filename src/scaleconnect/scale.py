@@ -71,6 +71,7 @@ class IdentityCheck:
     status: ScaleStatus | None
     message: str
     serial: str | None = None
+    may_be_frozen: bool = False  # it gave no reply. Do not read it again until a person has checked it
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,7 @@ class ReadResult:
     message: str
     items: dict[int, Item]
     complete: bool = False  # reached the end of the table, not an early stop
+    may_be_frozen: bool = False  # it gave no reply. Do not read it again until a person has checked it
 
 
 class _NoSession(Exception):
@@ -299,13 +301,13 @@ class ScaleClient:
             found = protocol.parse_identity(reply)
         except _CouldNotConnect as exc:
             if exc.connected:
-                return IdentityCheck(False, ScaleStatus.READ_FAILED, f"{unconfirmed} ({exc}). Nothing was written. {FROZEN_NOTE}")
-            return IdentityCheck(False, ScaleStatus.UNREACHABLE, f"{name}: could not connect ({exc}). Nothing was sent. {FROZEN_NOTE}")
+                return IdentityCheck(False, ScaleStatus.READ_FAILED, f"{unconfirmed} ({exc}). Nothing was written. {FROZEN_NOTE}", may_be_frozen=True)
+            return IdentityCheck(False, ScaleStatus.UNREACHABLE, f"{name}: could not connect ({exc}). Nothing was sent. {FROZEN_NOTE}", may_be_frozen=True)
         except OSError as exc:
-            return IdentityCheck(False, ScaleStatus.UNREACHABLE, f"{name}: could not connect ({_describe(exc)}). Nothing was sent. {FROZEN_NOTE}")
+            return IdentityCheck(False, ScaleStatus.UNREACHABLE, f"{name}: could not connect ({_describe(exc)}). Nothing was sent. {FROZEN_NOTE}", may_be_frozen=True)
         except (_NoReplyYet, _ReplyLost) as exc:
             detail = exc.args[0] if exc.args else exc.__class__.__name__
-            return IdentityCheck(False, ScaleStatus.READ_FAILED, f"{unconfirmed} ({detail}). Nothing was written. {FROZEN_NOTE}")
+            return IdentityCheck(False, ScaleStatus.READ_FAILED, f"{unconfirmed} ({detail}). Nothing was written. {FROZEN_NOTE}", may_be_frozen=True)
         except protocol.ReadReplyError as exc:
             detail = exc.args[0] if exc.args else exc.__class__.__name__
             return IdentityCheck(False, ScaleStatus.READ_FAILED, f"{unconfirmed} ({detail}). Nothing was written.")
@@ -334,7 +336,7 @@ class ScaleClient:
         if not self._identity_confirmed:
             identity = self.identify()
             if not identity.ok:
-                return ReadResult(False, identity.status, identity.message, {})
+                return ReadResult(False, identity.status, identity.message, {}, may_be_frozen=identity.may_be_frozen)
 
         def attempt() -> tuple[dict[int, Item], bool]:
             sock = self._connect_read()
@@ -352,10 +354,10 @@ class ScaleClient:
             items, complete = self._connect_with_retry(attempt)
         except _CouldNotConnect as exc:
             if exc.connected:
-                return ReadResult(False, ScaleStatus.READ_FAILED, f"{name}: the read failed ({exc}). {FROZEN_NOTE}", {})
-            return ReadResult(False, ScaleStatus.UNREACHABLE, f"{name}: could not connect to read ({exc}). {FROZEN_NOTE}", {})
+                return ReadResult(False, ScaleStatus.READ_FAILED, f"{name}: the read failed ({exc}). {FROZEN_NOTE}", {}, may_be_frozen=True)
+            return ReadResult(False, ScaleStatus.UNREACHABLE, f"{name}: could not connect to read ({exc}). {FROZEN_NOTE}", {}, may_be_frozen=True)
         except _ReadStopped as exc:
-            return ReadResult(False, ScaleStatus.READ_FAILED, _stopped_message(name, exc), {})
+            return ReadResult(False, ScaleStatus.READ_FAILED, _stopped_message(name, exc), {}, may_be_frozen=exc.silent)
         return ReadResult(True, None, f"{name}: read {len(items)} records.", items, complete)
 
     def _read_patiently(self, up_to_id: int | None) -> ReadResult:
@@ -368,7 +370,7 @@ class ScaleClient:
             text = f"{name}: could not read back in time ({last})."
             if silent and FROZEN_NOTE not in text:
                 text = f"{text} {FROZEN_NOTE}"
-            return ReadResult(False, ScaleStatus.READ_FAILED, text, {})
+            return ReadResult(False, ScaleStatus.READ_FAILED, text, {}, may_be_frozen=silent)
 
         # The window is real time, whichever way the scale says no: at once, or not at all.
         while True:
@@ -378,7 +380,7 @@ class ScaleClient:
                     return ReadResult(False, identity.status, identity.message, {})
                 if not identity.ok:
                     last = identity.message
-                    silent = True
+                    silent = identity.may_be_frozen
                     if time.monotonic() >= deadline:
                         return out_of_time()
                     self._sleep(self._settings.read_back_retry_seconds)
@@ -397,7 +399,7 @@ class ScaleClient:
                     silent = exc.silent
                     # Once blocks have come, a problem is a real stall. Stop.
                     if not exc.before_first_block:
-                        return ReadResult(False, ScaleStatus.READ_FAILED, _stopped_message(name, exc), {})
+                        return ReadResult(False, ScaleStatus.READ_FAILED, _stopped_message(name, exc), {}, may_be_frozen=exc.silent)
                 finally:
                     self._end_session(sock)
             if time.monotonic() >= deadline:

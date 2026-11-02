@@ -28,7 +28,7 @@ Words in capitals are values you supply. An option marked "can repeat" can be gi
 | `read` | Show what the enabled scales hold now. Writes nothing | Yes, reads |
 | `settle` | Preview settling one item that differs on one scale | Yes, reads |
 | `resolve CHANGE_ID --note TEXT` | Close a change that never finished, after someone has looked | No |
-| `reload --scale NAME --yes` | Overwrite ids 1 to N on one scale with the catalog. No read first | Yes, writes, then one read |
+| `reload --scale NAME --yes [--accept-differences]` | Overwrite ids 1 to N on one scale with the catalog. No read first. Refuses if the catalog differs from the last read, or nothing is known, unless you accept that | Yes, writes, then one read. Not if it refuses |
 
 ### preview
 
@@ -55,7 +55,7 @@ Each change is an object. Prices are text such as `"12.50"`, never a number.
 {"action": "delete", "target_plu": "4002"}
 ```
 
-A delete overwrites the item's id on each scale with a placeholder record named `UNUSED`, so the old PLU stops working. A preview with a delete gives a warning that must be acknowledged at apply. PLUs 9001 to 9500 belong to placeholders, so an add or edit that uses one gets the error `reserved_plu`. An edit can change a PLU with `"plu"`, and Code always follows it. A preview with a PLU change also gives a warning that must be acknowledged at apply, because the old PLU stops working. If it lands on one scale and not another, repeat the same edit. Settling never changes a PLU on a scale, and refuses with `plu_edit_held`. The full list of keys, warnings and error codes is in `docs/LIBRARY.md`.
+A delete overwrites the item's id on each scale with a placeholder record named `UNUSED`, so the old PLU stops working. A preview with a delete gives a warning that must be acknowledged at apply. The old PLU stays taken until every scale that may hold it has confirmed, and an add or edit using it gets `duplicate_plu`. PLUs 9001 to 9500 belong to placeholders, so an add or edit that uses one gets the error `reserved_plu`. An edit can change a PLU with `"plu"`, and Code always follows it. A preview with a PLU change also gives a warning that must be acknowledged at apply, because the old PLU stops working. If it lands on one scale and not another, repeat the same edit, which needs the same acknowledgement. Settling cannot do this: `--take catalog` refuses with `plu_edit_held`, and `--take scale` on a scale still on the old PLU refuses with `plu_change_not_finished`. Any write reads the whole table on each scale first, and is refused if its PLU is on another id there, or if the read ended below an id the catalog expects. If the write would have to fill a gap, it needs a preview with `--read`, and that warning acknowledged. The full list of keys, warnings and error codes is in `docs/LIBRARY.md`.
 
 ### apply
 
@@ -82,6 +82,8 @@ Previews settling one item that differs on one scale. Apply the preview with `ap
 
 A whole table read takes about 30 seconds at the default pace.
 
+`preview --read` and `apply` also do one each, on each scale.
+
 If a read gets no reply, the message says the scale may have frozen and may need a reboot. Check the scale before trying again. A read has frozen scales with damaged or old records. A gap in the ids is suspected too, but not proven.
 
 ### reload
@@ -90,7 +92,10 @@ If a read gets no reply, the message says the scale may have frozen and may need
 
 - `--scale NAME`: required. One scale. It must be write enabled.
 - `--yes`: required. Without it nothing is sent, and the command exits 2.
+- `--accept-differences`: send it although the catalog differs from this scale's last known read, or nothing is known about it. Only use it after a person has read the list.
 - `--who NAME`: who is asking.
+
+**The catalog can be out of date, and a reload puts its prices on the scale.** So before anything goes out, it compares the catalog with this scale's last known read, on PLU, description and price. It does not contact the scale for this. If there is any difference, or no read has reached an id, it lists them, says plainly when nothing is known, sends nothing, and exits 6. Read that list. To find out what the scale holds now, run `compare`, if a read is safe on it. Then run the reload again with `--accept-differences` if you still want it. A scale fresh from a reset, or one whose read freezes, will need the flag, because nothing can be known about it.
 
 Use it for these:
 
@@ -103,9 +108,9 @@ What it does, in order:
 1. Backs up the item list, as for any first write. It does not save what the scale holds, because that needs a read. The change log says so.
 2. Checks the serial with `CX`, and sends nothing else first. It does not read the scale first.
 3. Sends ids 1 to N in id order. A live item goes exactly as the catalog holds it. Any other id gets a placeholder, so no gap is left.
-4. Only if every record was accepted, reads the scale once and compares all 20 fields. It waits out the scale's busy gap after a send. If that read fails, the report says the scale may be frozen and need a reboot, and it does not try again.
+4. Only if every record was accepted, reads the scale and compares all 20 fields. A scale ignores connections for a while after a send, so it tries through the read back window, 45 seconds by default, until a read starts. If that fails, or a read stalls once it has started, the report says the scale may be frozen and need a reboot, and it stops. Do not read that scale again until someone has checked it.
 
-It prints one JSON object. Read `message`, then `status`. `ok` is true only if every record reads back as sent and no PLU is left on two ids. Ids above N are not touched, and `left_above` lists any real records there. If a send stops part way, `not_accepted` lists the ids, nothing is read, and the status is `unknown`. Run it again once the scale answers.
+It prints one JSON object. Read `message`, then `status`. `message` names each price that changed from what the scale last showed, and `differences` lists them, with when that read was. Where nothing was known, it says it could not name a price. `ok` is true only if every record reads back as sent and no PLU is left on two ids. A PLU left on two ids gives the status `mismatch`. Ids above N are not touched, and `left_above` lists any real records there. If a send stops part way, `not_accepted` lists the ids, nothing is read, and the status is `unknown`. Run it again once the scale answers.
 
 Allow a few minutes. A full send of about 480 items took 90 to 160 seconds, then comes the read. The catalog's items do not change. Each scale needs its own reload.
 
@@ -149,7 +154,7 @@ A validation failure also has an `errors` list inside `error`.
 | 3 | Validation failed, including a `preview` or `settle` with errors, an unknown scale name, or a `reload` of a scale that is not write enabled |
 | 4 | Not found: item, change or preview |
 | 5 | Preview expired, stale or already applied, or an interrupted change is in the way |
-| 6 | Warnings must be acknowledged |
+| 6 | Warnings must be acknowledged. Or `reload` found differences, or nothing known, and `--accept-differences` was not given. Nothing was sent |
 | 7 | `apply` ran but the outcome is not `success`. Or `compare` found differences or could not read. Or `read` could not read a scale. Or `reload` ran and `ok` is false. Read the output |
 | 8 | Config problem, or no seeded catalog |
 | 9 | Backup failed. Nothing was sent |

@@ -101,18 +101,18 @@ def test_step2_a_stalled_read_stops_and_is_not_retried_in_a_loop(make_env):
     assert env.fakes["A"].kinds().count("LP") == 1
 
 
-def test_step2_the_read_stops_early_once_the_id_is_reached(make_env):
+def test_step2_the_read_covers_the_table_and_the_read_back_stops_at_the_id(make_env):
     seed = [Item(i, f"{1000 + i}", f"{1000 + i}", f"Item {i}", "1.00", timestamp="2026-01-01 00:00:00")
             for i in range(1, 31)]
     env = make_env({"A": True}, seed=seed)
     fake = env.fakes["A"]
-    env.change([{"action": "edit", "target_id": 1, "price": "1.10"}])  # first write: the whole table, for the dump
-    oks_after_first = fake.kinds().count("Ok")
-    assert oks_after_first >= 5
+    env.change([{"action": "edit", "target_id": 1, "price": "1.10"}])
+    whole_table = fake.kinds().count("Ok")  # the read first. The read back stays in the first block
+    assert whole_table == 6
     env.change([{"action": "edit", "target_id": 1, "price": "1.20"}])  # id 1 is in the first block
-    assert fake.kinds().count("Ok") == oks_after_first, "it read more blocks than it needed"
+    assert fake.kinds().count("Ok") == 2 * whole_table, "its PLU could be under any later id"
     env.change([{"action": "edit", "target_id": 12, "price": "1.30"}])  # id 12 is in the third block
-    assert fake.kinds().count("Ok") == oks_after_first + 2 + 2  # two before the write, two to read back
+    assert fake.kinds().count("Ok") == 3 * whole_table + 2  # the table before the write, two to read back
 
 
 def test_step2_an_add_reads_the_whole_table_to_look_for_its_plu(make_env):

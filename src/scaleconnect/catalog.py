@@ -35,7 +35,7 @@ from .models import Item
 
 MIN_ID = 1
 MAX_ID = 500
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 _LOCK_TRIES = 4
 _LOCK_GAP_SECONDS = 0.03
 BELIEFS = ("present", "absent", "unknown")
@@ -233,6 +233,7 @@ CREATE TABLE IF NOT EXISTS plu_moves (
     old_plu TEXT NOT NULL,
     record TEXT NOT NULL,
     noted_at TEXT NOT NULL,
+    trying INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (scale, item_id, old_plu)
 );
 
@@ -295,6 +296,11 @@ class Catalog:
                 f"catalog file is version {version}, this program knows {SCHEMA_VERSION}")
         db.execute("PRAGMA journal_mode = WAL")
         db.executescript(_SCHEMA)
+        if "trying" not in {r["name"] for r in db.execute("PRAGMA table_info(plu_moves)")}:
+            try:
+                db.execute("ALTER TABLE plu_moves ADD COLUMN trying INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass  # another process opening this file got there first
         db.execute("BEGIN IMMEDIATE")
         db.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('epoch', ?)", (uuid.uuid4().hex[:8],))
         db.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('items_version', '0')")
@@ -425,6 +431,12 @@ class Catalog:
             "(SELECT item_id FROM scale_state WHERE belief IN ('present', 'unknown')) "
             "ORDER BY deleted_at DESC, id DESC LIMIT 1", (value,)).fetchone()
         return _row_to_item(row) if row else None
+
+    def deleted_still_held(self) -> list[dict]:
+        """Each deleted item and scale that may still hold it: {"plu", "item_id", "scale"}. Such a PLU is not free."""
+        return [dict(r) for r in self._conn().execute(
+            "SELECT i.plu AS plu, i.id AS item_id, s.scale AS scale FROM items i JOIN scale_state s ON s.item_id = i.id "
+            "WHERE i.deleted = 1 AND s.belief IN ('present', 'unknown') ORDER BY i.deleted_at, i.id, s.scale")]
 
     def search(self, query: str, limit: int = 50) -> list[Item]:
         """Match the whole or start of a PLU, or any part of a description, ignoring case.
@@ -668,7 +680,9 @@ class Catalog:
         is an empty slot, so the service leaves it out of items.
 
         A read that shows nothing at a deleted item's id also confirms that this scale no
-        longer holds it, which is what frees the id for reuse.
+        longer holds it, which is what frees the id for reuse. So covered_up_to must not go past
+        what the read can vouch for. The item's PLU under another id of this scale means it is
+        still on there, so that does not confirm anything.
         """
         held = {it.id: it for it in items}
         rows = [(scale, n, json.dumps(it.to_fields(), ensure_ascii=False), at) for n, it in held.items()]
@@ -680,10 +694,26 @@ class Catalog:
             db.executemany(
                 "INSERT INTO scale_read (scale, item_id, record, at) VALUES (?,?,?,?) "
                 "ON CONFLICT(scale, item_id) DO UPDATE SET record = excluded.record, at = excluded.at", rows)
+            plus_held = {it.plu for it in held.values()}
+            deleted_plu = {r["id"]: r["plu"] for r in db.execute("SELECT id, plu FROM items WHERE deleted = 1")}
+            gone = [n for n in empty if deleted_plu.get(n) not in plus_held]
             db.executemany(
                 "UPDATE scale_state SET belief = 'absent', record = NULL WHERE scale = ? AND item_id = ? "
                 "AND belief != 'absent' AND item_id IN (SELECT id FROM items WHERE deleted = 1)",
-                [(scale, n) for n in empty])
+                [(scale, n) for n in gone])
+
+    def scale_state_rows(self, scale: str) -> dict[int, dict]:
+        """Every state row for one scale, by id, whatever the belief."""
+        return {r["item_id"]: {"status": r["status"], "belief": r["belief"], "change_id": r["change_id"], "at": r["at"]}
+                for r in self._conn().execute("SELECT * FROM scale_state WHERE scale = ?", (scale,))}
+
+    def last_reads_for_scale(self, scale: str) -> dict[int, dict]:
+        """Id to {"record": Item or None, "at"}, for every id a read of this scale has reached."""
+        out: dict[int, dict] = {}
+        for r in self._conn().execute("SELECT * FROM scale_read WHERE scale = ?", (scale,)):
+            fields = json.loads(r["record"])
+            out[r["item_id"]] = {"record": Item.from_fields(fields) if fields is not None else None, "at": r["at"]}
+        return out
 
     def last_reads(self, item_id: int) -> dict[str, dict]:
         """Scale name to {"record": Item or None, "at"}. None means the read found nothing at this id."""
@@ -722,13 +752,18 @@ class Catalog:
 
     # ------------------------------------------- PLU changes not yet finished
 
-    def note_plu_move(self, scale: str, old: Item) -> None:
-        """The catalog's PLU changed, and this scale has not confirmed it, so it may still hold `old`."""
+    def note_plu_move(self, scale: str, old: Item, *, trying: bool = False) -> None:
+        """The catalog's PLU changed, and this scale has not confirmed it, so it may still hold `old`.
+
+        trying means the other way round: the catalog has not moved, because no scale is known to
+        have taken the change, and this scale may hold `old` as the new record from that change.
+        """
         with self._tx() as db:
             db.execute(
-                "INSERT INTO plu_moves (scale, item_id, old_plu, record, noted_at) VALUES (?,?,?,?,?) "
-                "ON CONFLICT(scale, item_id, old_plu) DO UPDATE SET record = excluded.record, noted_at = excluded.noted_at",
-                (scale, _check_id(old.id), old.plu, json.dumps(_item_values(old), ensure_ascii=False), _now()))
+                "INSERT INTO plu_moves (scale, item_id, old_plu, record, noted_at, trying) VALUES (?,?,?,?,?,?) "
+                "ON CONFLICT(scale, item_id, old_plu) DO UPDATE SET record = excluded.record, "
+                "noted_at = excluded.noted_at, trying = excluded.trying",
+                (scale, _check_id(old.id), old.plu, json.dumps(_item_values(old), ensure_ascii=False), _now(), int(trying)))
 
     def plu_moves(self, item_id: int, scale: str) -> dict[str, Item]:
         """Old PLU to old record, for what this scale may still hold at this id."""
@@ -739,6 +774,20 @@ class Catalog:
         """This scale confirmed what the catalog holds at this id."""
         with self._tx() as db:
             db.execute("DELETE FROM plu_moves WHERE scale = ? AND item_id = ?", (scale, item_id))
+
+    def all_plu_moves(self) -> list[dict]:
+        """Every PLU change a scale has not confirmed: {"scale", "item_id", "old_plu", "trying"}."""
+        return [dict(r) for r in self._conn().execute(
+            "SELECT scale, item_id, old_plu, trying FROM plu_moves ORDER BY item_id, scale, noted_at")]
+
+    def settle_plu_moves_from_read(self, scale: str, plus_held: Iterable[str]) -> None:
+        """A read this scale can vouch for shows these PLUs and no others, so any other noted PLU is not on it."""
+        held = set(plus_held)
+        gone = [m for m in self.all_plu_moves() if m["scale"] == scale and m["old_plu"] not in held]
+        if gone:
+            with self._tx() as db:
+                db.executemany("DELETE FROM plu_moves WHERE scale = ? AND item_id = ? AND old_plu = ?",
+                               [(scale, m["item_id"], m["old_plu"]) for m in gone])
 
     def old_plus_in_use(self) -> dict[str, int]:
         """Old PLU to its id, for every PLU some scale may still hold from an unfinished change."""

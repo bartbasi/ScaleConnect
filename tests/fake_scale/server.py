@@ -266,6 +266,8 @@ class FakeScale:
         self.freeze_on_gap = freeze_on_gap
         self.frozen = False
         self.freezes = 0
+        self.end_read_after_blocks: int | None = None
+        self.end_read_every_time = True
 
         self._lock = threading.RLock()
         self._items: dict[int, Record] = {}
@@ -505,6 +507,12 @@ class FakeScale:
         marks = [self.freeze_lp_at_id, self._gap_at() if self.freeze_on_gap else None]
         marks = [m for m in marks if m is not None]
         return bool(marks) and int(conn.blocks[conn.block_at][-1][0]) >= min(marks)
+
+    def end_read_early(self, after_blocks: int, every_time: bool = True) -> None:
+        """Reads say LP00End after this many blocks, though the fake stores more."""
+        with self._lock:
+            self.end_read_after_blocks = after_blocks
+            self.end_read_every_time = every_time
 
     def reset_next_connections(self, n: int = 1) -> None:
         """Accept the next n connections and reset them at once."""
@@ -858,7 +866,13 @@ class FakeScale:
         with self._lock:
             ids = sorted(i for i in self._items if i >= 1)
             recs = [self._items[i] for i in ids]
-        return [recs[i : i + BLOCK_SIZE] for i in range(0, len(recs), BLOCK_SIZE)]
+            blocks = [recs[i : i + BLOCK_SIZE] for i in range(0, len(recs), BLOCK_SIZE)]
+            if self.end_read_after_blocks is not None:
+                # A read that says LP00End early, though the table goes on. Nobody has seen this on a
+                # good table, and nobody has ruled it out, so nothing may rely on where a read ends.
+                blocks = blocks[: self.end_read_after_blocks]
+                self.end_read_after_blocks = self.end_read_after_blocks if self.end_read_every_time else None
+        return blocks
 
     def _block_reply(self, conn: _Conn) -> bytes:
         if conn.block_at >= len(conn.blocks):

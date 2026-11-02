@@ -262,11 +262,19 @@ def test_an_early_stop_says_nothing_about_ids_past_it(make_service, make_fake):
 
 def test_a_catalog_id_never_seen_on_a_scale_records_the_read(make_service, make_fake):
     fake = make_fake()
+    fake.preload(*[tuple(i.to_fields()) for i in seed_items() if i.plu != "1002"])
+    service = make_service([conf(fake)])
+    service.compare_scales()
+    state = service.get_item(plu="1002").scales["A"]
+    assert state.last_read is None and state.last_read_at
+
+
+def test_a_read_that_ended_early_records_nothing_past_where_it_ended(make_service, make_fake):
+    fake = make_fake()
     fake.preload(tuple(seed_items()[0].to_fields()))
     service = make_service([conf(fake)])
     service.compare_scales()
-    state = service.get_item(plu="1004").scales["A"]
-    assert state.last_read is None and state.last_read_at
+    assert "A" not in service.get_item(plu="1004").scales, "no read reached it"
 
 
 # ---------------------------------------------------------------- 5. the message agrees

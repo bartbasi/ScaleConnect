@@ -10,6 +10,7 @@ import sqlite3
 
 import pytest
 
+from scaleconnect import errors
 from scaleconnect.catalog import Catalog
 from scaleconnect.errors import AcknowledgementRequired
 from scaleconnect.models import Item, placeholder_record
@@ -259,8 +260,13 @@ def test_a_retry_works_with_one_scale_on_the_old_plu_and_others_on_the_new(env3,
 
     p = env3.preview([{"action": "edit", **retry}], read_scales=True)
     assert p.drift == (), "neither end of the change is a different product"
-    assert [w.code for w in p.warnings] == ["no_change"], "this was acknowledged the first time, and no_change covers it"
-    rec = env3.svc.apply_change(p.preview_id)
+    codes = {w.code: w for w in p.warnings}
+    assert set(codes) == {"plu_change", "plu_change_lagging"}, "finishing it changes what a PLU does, so it needs a yes now"
+    assert codes["plu_change"].requires_ack and "PLU 1001 on B" in codes["plu_change"].message
+    assert "B still holds PLU" in codes["plu_change_lagging"].message and not codes["plu_change_lagging"].requires_ack
+    with pytest.raises(errors.AcknowledgementRequired):
+        env3.svc.apply_change(p.preview_id)
+    rec = env3.svc.apply_change(p.preview_id, True)
     assert env3.statuses(rec) == {n: "verified" for n in "ABC"} and rec.success
     for fake in env3.fakes.values():
         assert fake.item(1)[1:3] == ("1999", "1999")
@@ -268,11 +274,11 @@ def test_a_retry_works_with_one_scale_on_the_old_plu_and_others_on_the_new(env3,
     assert env3.catalog.old_plus_in_use() == {}
 
 
-def test_a_retry_that_also_changes_a_field_warns_because_no_change_does_not_cover_it(env3):
+def test_a_retry_that_also_changes_a_field_warns_too(env3):
     rejected_on_b(env3)
     p = env3.preview([{"action": "edit", "target_plu": "1999", "plu": "1999", "price": "11.00"}])
     assert [w.code for w in p.warnings] == ["plu_change"]
-    assert "PLU 1001 will stop working" in p.warnings[0].message
+    assert "PLU 1001 on B" in p.warnings[0].message
     rec = env3.svc.apply_change(p.preview_id, True)
     assert env3.statuses(rec) == {n: "verified" for n in "ABC"}
     assert env3.fakes["B"].item(1)[2:5] == ("1999", "Test Cheddar", "11.00")
@@ -301,7 +307,7 @@ def test_a_retry_after_a_lost_reply_where_the_record_had_landed(make_env):
     rec = env.change(MOVE, ack=True)
     assert env.statuses(rec) == {"A": "verified", "B": "unknown"}
     assert env.fakes["B"].item(1)[2] == "1999", "it landed, and nobody knows that yet"
-    rec = env.change(MOVE)
+    rec = env.change(MOVE, ack=True)
     assert env.statuses(rec) == {"A": "verified", "B": "verified"} and rec.scale_results[1].drift == ()
 
 
@@ -311,7 +317,7 @@ def test_a_retry_after_a_lost_reply_where_the_record_had_not_landed(make_env):
     rec = env.change(MOVE, ack=True)
     assert env.statuses(rec) == {"A": "verified", "B": "unknown"}
     assert env.fakes["B"].item(1)[2] == "1001"
-    rec = env.change(MOVE)
+    rec = env.change(MOVE, ack=True)
     assert env.statuses(rec) == {"A": "verified", "B": "verified"}
     assert env.fakes["B"].item(1)[2] == "1999"
 
@@ -347,12 +353,12 @@ def test_a_lagging_scale_whose_old_record_has_other_values_needs_its_token_and_k
     rejected_on_b(env3)
     fake = env3.fakes["B"]
     fake.preload(row(SEED[0].replace(price="12.00")))
-    rec = env3.change(MOVE)
+    rec = env3.change(MOVE, ack=True)
     assert env3.statuses(rec)["B"] == "drift_refused" and fake.item(1)[2] == "1001"
     finding = next(d for d in rec.scale_results[1].drift)
     assert finding.kind == "differs" and finding.ack_token and list(finding.fields) == ["price"]
     p = env3.preview(MOVE)
-    rec = env3.svc.apply_change(p.preview_id, acknowledge_drift=[finding.ack_token])
+    rec = env3.svc.apply_change(p.preview_id, True, acknowledge_drift=[finding.ack_token])
     assert env3.statuses(rec)["B"] == "verified"
     assert fake.item(1)[1:3] == ("1999", "1999") and fake.item(1)[4] == "12.00"
 
@@ -362,7 +368,7 @@ def test_a_scale_with_writes_off_can_be_finished_once_they_are_on(make_env):
     rec = env.change(MOVE, ack=True)
     assert env.statuses(rec) == {"A": "verified", "B": "skipped_not_write_enabled"} and env.silent("B")
     env.set_write_enabled("B", True)
-    rec = env.change(MOVE)
+    rec = env.change(MOVE, ack=True)
     assert env.statuses(rec) == {"A": "verified", "B": "verified"}
     assert env.fakes["B"].item(1)[1:3] == ("1999", "1999")
 
@@ -372,7 +378,7 @@ def test_a_scale_the_change_left_out_counts_as_not_having_moved(env3):
     assert rec.not_touched == ("B", "C") and env3.silent("B", "C")
     assert env3.catalog.plu_moves(1, "B")["1001"].to_fields() == SEED[0].to_fields()
     assert "1001" in env3.catalog.old_plus_in_use()
-    rec = env3.change(MOVE)
+    rec = env3.change(MOVE, ack=True)
     assert env3.statuses(rec) == {n: "verified" for n in "ABC"} and rec.success
 
 
@@ -383,7 +389,7 @@ def test_a_second_change_before_the_first_finished_still_reaches_the_lagging_sca
     assert env3.statuses(rec)["B"] == "rejected"
     env3.fakes["B"].clear_faults()
     assert set(env3.catalog.plu_moves(1, "B")) == {"1001", "1999"}
-    rec = env3.change([{"action": "edit", "target_plu": "1888", "plu": "1888"}])
+    rec = env3.change([{"action": "edit", "target_plu": "1888", "plu": "1888"}], ack=True)
     assert env3.statuses(rec) == {n: "verified" for n in "ABC"}
     assert env3.fakes["B"].item(1)[2] == "1888"
     assert env3.catalog.old_plus_in_use() == {}
@@ -421,7 +427,7 @@ def test_a_plu_the_scale_was_never_moved_from_is_still_a_different_product(env3)
     rejected_on_b(env3)
     fake = env3.fakes["B"]
     fake.preload(row(SEED[0].replace(plu="1777", code="1777")))
-    rec = env3.change(MOVE)
+    rec = env3.change(MOVE, ack=True)
     assert env3.statuses(rec)["B"] == "drift_refused"
     assert rec.scale_results[1].drift[0].kind == "different_product"
     assert fake.item(1)[2] == "1777"
@@ -446,7 +452,7 @@ def test_an_old_plu_a_scale_may_hold_is_not_free_until_it_finishes(env3):
     assert not p.ok and p.errors[0].code == "duplicate_plu"
     other = env3.svc.preview_changes([{"action": "edit", "target_plu": "1002", "plu": "1001"}])
     assert not other.ok and other.errors[0].code == "duplicate_plu"
-    env3.change(MOVE)
+    env3.change(MOVE, ack=True)
     assert env3.svc.preview_changes(add).ok
 
 
@@ -461,7 +467,7 @@ def test_a_delete_can_reach_a_scale_still_on_the_old_plu(env3):
 
 def test_a_reload_finishes_it_too(env3):
     rejected_on_b(env3)
-    result = env3.svc.reload_scale("B", requested_by="test")
+    result = env3.svc.reload_scale("B", accept_differences=True, requested_by="test")
     assert result.ok and env3.fakes["B"].item(1)[2] == "1999"
     assert env3.catalog.plu_moves(1, "B") == {}
 

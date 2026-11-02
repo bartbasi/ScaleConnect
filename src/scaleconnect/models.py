@@ -350,6 +350,7 @@ class Drift:
     held: Item | None
     message: str
     ack_token: str | None = None  # None means no acknowledgement can allow it
+    unfinished_plu_change: bool = False  # this scale is still on the old PLU. Repeat that edit to finish it
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -361,6 +362,7 @@ class Drift:
             "held": self.held.to_dict() if self.held else None,
             "message": self.message,
             "ack_token": self.ack_token,
+            "unfinished_plu_change": self.unfinished_plu_change,
         }
 
     @classmethod
@@ -374,6 +376,7 @@ class Drift:
             held=Item.from_dict(data["held"]) if data.get("held") else None,
             message=data.get("message", ""),
             ack_token=data.get("ack_token"),
+            unfinished_plu_change=bool(data.get("unfinished_plu_change", False)),
         )
 
 
@@ -385,6 +388,7 @@ class ScaleComparison:
     items_read: int = 0
     read_at: str | None = None
     differences: tuple[Drift, ...] = ()
+    may_be_frozen: bool = False  # it gave no reply. Do not read it again until a person has checked it
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -394,6 +398,7 @@ class ScaleComparison:
             "items_read": self.items_read,
             "read_at": self.read_at,
             "differences": [d.to_dict() for d in self.differences],
+            "may_be_frozen": self.may_be_frozen,
         }
 
 
@@ -407,6 +412,7 @@ class OrphanMarks:
     marked: tuple[int, ...] = ()
     not_marked: tuple[int, ...] = ()  # ids asked for that are empty there, or that the catalog lists
     held: tuple[Item, ...] = ()  # what the scale holds at the marked ids
+    may_be_frozen: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -416,6 +422,7 @@ class OrphanMarks:
             "marked": list(self.marked),
             "not_marked": list(self.not_marked),
             "held": [i.to_dict() for i in self.held],
+            "may_be_frozen": self.may_be_frozen,
         }
 
 
@@ -446,6 +453,7 @@ class ScaleRead:
     read_at: str | None = None
     complete: bool = False  # the read reached the end of the table
     records: tuple[HeldRecord, ...] = ()
+    may_be_frozen: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -456,6 +464,7 @@ class ScaleRead:
             "read_at": self.read_at,
             "complete": self.complete,
             "records": [r.to_dict() for r in self.records],
+            "may_be_frozen": self.may_be_frozen,
         }
 
 
@@ -499,6 +508,7 @@ class PreviewWarning:
     message: str
     requires_ack: bool = False
     index: int | None = None
+    may_be_frozen: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -506,6 +516,7 @@ class PreviewWarning:
             "message": self.message,
             "requires_ack": self.requires_ack,
             "index": self.index,
+            "may_be_frozen": self.may_be_frozen,
         }
 
     @classmethod
@@ -515,6 +526,7 @@ class PreviewWarning:
             message=data["message"],
             requires_ack=bool(data.get("requires_ack", False)),
             index=data.get("index"),
+            may_be_frozen=bool(data.get("may_be_frozen", False)),
         )
 
 
@@ -524,9 +536,10 @@ class PreviewError:
     message: str
     index: int | None = None
     field: str | None = None
+    may_be_frozen: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        return {"code": self.code, "message": self.message, "index": self.index, "field": self.field}
+        return {"code": self.code, "message": self.message, "index": self.index, "field": self.field, "may_be_frozen": self.may_be_frozen}
 
 
 @dataclass(frozen=True)
@@ -591,6 +604,8 @@ class ScaleResult:
     replies: tuple[str, ...] = ()
     drift: tuple[Drift, ...] = ()
     mismatches: tuple[Drift, ...] = ()
+    may_be_frozen: bool = False  # it gave no reply. Do not read it again until a person has checked it
+    fillers_landed: tuple[int, ...] = ()  # placeholders the scale took to leave no gap. Not in items
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -602,6 +617,8 @@ class ScaleResult:
             "replies": list(self.replies),
             "drift": [d.to_dict() for d in self.drift],
             "mismatches": [d.to_dict() for d in self.mismatches],
+            "may_be_frozen": self.may_be_frozen,
+            "fillers_landed": list(self.fillers_landed),
         }
 
     @classmethod
@@ -615,7 +632,29 @@ class ScaleResult:
             replies=tuple(data.get("replies", [])),
             drift=tuple(Drift.from_dict(d) for d in data.get("drift", [])),
             mismatches=tuple(Drift.from_dict(d) for d in data.get("mismatches", [])),
+            may_be_frozen=bool(data.get("may_be_frozen", False)),
+            fillers_landed=tuple(data.get("fillers_landed", [])),
         )
+
+
+@dataclass(frozen=True)
+class ReloadDifference:
+    """One id where a reload would change what this scale last showed. No scale was contacted to find it."""
+
+    item_id: int
+    plu: str | None  # the PLU the scale last showed there, or None if it showed nothing
+    fields: dict[str, FieldDiff]  # before is what the scale last showed, after is what a reload sends
+    read_at: str
+    message: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "item_id": self.item_id,
+            "plu": self.plu,
+            "fields": {name: diff.to_dict() for name, diff in self.fields.items()},
+            "read_at": self.read_at,
+            "message": self.message,
+        }
 
 
 @dataclass(frozen=True)
@@ -634,12 +673,40 @@ class ReloadResult:
     differs_on_read: tuple[int, ...] = ()
     left_above: tuple[int, ...] = ()  # real records above top_id, which a reload does not touch
     duplicate_plus: tuple[str, ...] = ()  # PLUs both in the send and on an id above top_id
+    may_be_frozen: bool = False
+    differences: tuple[ReloadDifference, ...] = ()  # what the reload was expected to change, from the last read
+    not_known: tuple[int, ...] = ()  # ids no read has reached, so nobody knew what they held
 
     def to_dict(self) -> dict[str, Any]:
         out = {f.name: getattr(self, f.name) for f in fields(self)}
-        for name in ("placeholders", "not_accepted", "differs_on_read", "left_above", "duplicate_plus"):
+        for name in ("placeholders", "not_accepted", "differs_on_read", "left_above", "duplicate_plus", "not_known"):
             out[name] = list(out[name])
+        out["differences"] = [d.to_dict() for d in self.differences]
         return out
+
+
+@dataclass(frozen=True)
+class UnfinishedWork:
+    """A delete or a PLU change one scale has not confirmed. From the catalog, with no scale contact."""
+
+    scale: str
+    kind: str  # delete or plu_change
+    item_id: int
+    plu: str  # the PLU the catalog has, or for a delete the PLU it had
+    old_plus: tuple[str, ...]  # what the scale may still hold. For a delete, the item's own PLU
+    repeat: dict[str, Any]  # the change to preview, to finish this
+    message: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "scale": self.scale,
+            "kind": self.kind,
+            "item_id": self.item_id,
+            "plu": self.plu,
+            "old_plus": list(self.old_plus),
+            "repeat": dict(self.repeat),
+            "message": self.message,
+        }
 
 
 @dataclass(frozen=True)

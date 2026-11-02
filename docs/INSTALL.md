@@ -104,6 +104,30 @@ The script is safe to run twice. It starts the page only if it is not already an
 
 PLU editing is on. `PLU_EDIT_ENABLED` is `True` near the top of `src/scaleconnect/web/__main__.py`, so the edit screen lets staff change the PLU. Code always follows the PLU, and the page never shows it as a field. The library still checks every PLU change, and a change it refuses shows its reason. To turn the PLU box back to read only, set the value to `False` and restart the page.
 
+## Upgrade
+
+A running program keeps the code it started with. A new version can also change the catalog file, which a running old program does not know about. So the web page and the MCP server must be stopped and started together. Never leave one on old code while the other runs new code.
+
+1. Make sure no change is going to the scales. Open "Recent changes" and check.
+2. Stop both:
+
+   ```
+   sh ~/CCScaleApp/ScaleConnect/deploy/scaleconnect-web.sh stop
+   sh ~/CCScaleApp/ScaleConnect/deploy/scaleconnect-mcp.sh stop
+   ```
+
+3. Put the new files in place, and run `.venv/bin/pip install -e .` again if the requirements changed.
+4. Start both:
+
+   ```
+   sh ~/CCScaleApp/ScaleConnect/deploy/scaleconnect-web.sh start --no-open
+   sh ~/CCScaleApp/ScaleConnect/deploy/scaleconnect-mcp.sh
+   ```
+
+5. Run `status` on each, and open the page. Check it loads and shows no error.
+
+The first program to open the catalog after an upgrade changes it to the new layout. A program older than the file refuses to start, so an old copy cannot damage it. A copy that was already running does not refuse, which is why you stop it first. Back up the catalog file before an upgrade.
+
 ## Limits to know about
 
 - **It is plain HTTP.** There is no certificate. Anyone on the store network who can watch traffic could read the PIN as it is typed. The router keeps the page off the internet, and customers cannot join the store WiFi. Do not forward a port to this page, and do not put it behind a public address.

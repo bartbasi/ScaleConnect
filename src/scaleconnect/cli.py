@@ -116,6 +116,11 @@ def build_parser() -> argparse.ArgumentParser:
     reload = commands.add_parser("reload", help=reload_help, description=reload_help)
     reload.add_argument("--scale", required=True)
     reload.add_argument("--yes", action="store_true", help="yes, overwrite ids 1 to N on this scale. Refused without it")
+    reload.add_argument(
+        "--accept-differences",
+        action="store_true",
+        help="yes, send it although the catalog differs from this scale's last read, or nothing is known. Without it, those are listed and nothing is sent",
+    )
     reload.add_argument("--who", help="who is asking")
     return parser
 
@@ -197,7 +202,7 @@ def _run(args: argparse.Namespace) -> int:
         elif args.command == "resolve":
             _emit(service.resolve_interrupted_change(args.change_id, args.note, requested_by=args.who or _default_who()).to_dict())
         elif args.command == "reload":
-            result = service.reload_scale(args.scale, requested_by=args.who or _default_who())
+            result = service.reload_scale(args.scale, accept_differences=args.accept_differences, requested_by=args.who or _default_who())
             _emit(result.to_dict())
             return EXIT_OK if result.ok else EXIT_NOT_SUCCESS
         return EXIT_OK

@@ -164,7 +164,7 @@ def test_end_to_end_over_real_http(live, mode, price):
     async def work(client):
         tools = {t.name: t for t in (await client.list_tools()).tools}
         assert tools["scale_apply_changes"].annotations.destructive_hint is True
-        assert tools["scale_preview_changes"].annotations.read_only_hint is True
+        assert tools["scale_preview_changes"].annotations.read_only_hint is False, "a read can freeze a scale"
         scales = await client.call_tool("scale_list_scales", {})
         assert [s["name"] for s in scales.structured_content["scales"]] == ["A", "B"]
         preview = await client.call_tool(

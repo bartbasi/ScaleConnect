@@ -166,8 +166,24 @@
     return 'I understand. PLU ' + pc.before + ' will stop working. Change it to ' + pc.after + '.';
   }
 
-  function diffBlock(d, sent) {
-    var title; var cls = 'box'; var lines = [];
+  /* A repeat finishes work an earlier change left on some scale. The library shows no field change for a
+     PLU change that is only being finished, so these say what it does. */
+  function oldText(rep) { return rep.old && rep.old.length ? 'PLU ' + rep.old.join(' and PLU ') : 'the old PLU'; }
+  function repeatBox(rep) {
+    if (rep.kind === 'delete') {
+      return box('warn', 'Repeat', 'Finish the delete of PLU ' + rep.plu + '.',
+        'This sends the same delete again. PLU ' + rep.plu + ' stops working on any scale that still has it.');
+    }
+    return box('warn', 'Repeat', 'Finish the PLU change to ' + rep.plu + '.',
+      'This sends only the PLU. Price and name are not changed. Every scale you send to gets PLU ' + rep.plu + ' on this item, and ' +
+      oldText(rep) + ' stops working on it. A scale that already has PLU ' + rep.plu + ' gets the same record again, with a new edit time.');
+  }
+  function repeatTick(rep) {
+    var old = oldText(rep);
+    return 'I understand. ' + old.charAt(0).toUpperCase() + old.slice(1) + ' will stop working on a scale that still has it.';
+  }
+
+  function diffBlock(d, sent) {    var title; var cls = 'box'; var lines = [];
     var item = d.after || d.before || {};
     if (d.action === 'add') {
       title = 'Add a new item';
@@ -211,6 +227,25 @@
       h('input', { type: 'checkbox', id: id, onchange: onchange }), h('span', { text: text }));
   }
 
+  /* Start the review of a repeat. The person still reviews it and ticks before anything is sent.
+     meta says what is being finished, so the review can say so plainly. */
+  function startRepeat(title, change, meta, back) {
+    saveDraft({ title: title, changes: [change], back: back || '#/', backText: 'Go back', repeat: meta });
+    /* From a refused settle we are already on the review address, so the hash would not change. */
+    if (location.hash === '#/review') { route(); } else { location.hash = '#/review'; }
+  }
+
+  /* Work that some scale has not confirmed: a delete or a PLU change. From our list, with no scale contact. */
+  function unfinishedBoxes(items) {
+    return (items || []).map(function (c) {
+      return h('div', null,
+        box('bad', 'Not finished', c.text, c.more),
+        h('button', { class: 'btn second', type: 'button', text: c.button, onclick: function () {
+          startRepeat('Repeat ' + c.kind + ' ' + c.plu, c.repeat, { kind: c.kind, plu: c.plu, old: c.old_plus || [] }, '#/');
+        } }));
+    });
+  }
+
   /* home: search */
 
   function renderHome(my) {
@@ -238,7 +273,8 @@
     input.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') { clearTimeout(wait); run(); } });
     var off = S.scales.filter(function (s) { return !s.write_enabled; }).map(function (s) { return s.name; });
     var last = loadLast();
-    var nodes = [h('h1', { text: 'Find an item' }), input, results];
+    var unf = h('div', { id: 'unfinished' });
+    var nodes = [h('h1', { text: 'Find an item' }), unf, input, results];
     if (S.busy) { nodes.unshift(box('working', 'Working', 'A change is being sent right now.', 'You can still look up items.')); }
     if (last && last.pid) {
       nodes.push(h('a', { class: 'btn second', href: '#/result/' + encodeURIComponent(last.pid), text: 'See the last change I sent' }));
@@ -249,6 +285,12 @@
     show(nodes);
     results.appendChild(hint);
     input.focus();
+    /* Unfinished deletes and PLU changes. A failure here must not spoil the search above. */
+    api('GET', '/api/unfinished').then(function (d) {
+      if (my !== routeToken || !d.items.length) { return; }
+      unf.appendChild(h('h2', { text: 'Not finished' }));
+      unfinishedBoxes(d.items).forEach(function (n) { unf.appendChild(n); });
+    }, function () { /* the list is a help, not a need */ });
   }
 
   /* one item */
@@ -258,7 +300,7 @@
     var wrong = (checked || []).filter(function (s) { return s.status !== 'read'; });
     if (!wrong.length) { return null; }
     return wrong.map(function (s) {
-      return box(s.severity === 'warn' ? 'warn' : 'bad', 'Check this', s.reboot ? REBOOT : s.text, s.reboot ? s.text : null);
+      return box(s.severity === 'warn' ? 'warn' : 'bad', 'Check this', s.may_be_frozen ? REBOOT : s.text, s.may_be_frozen ? s.text : null);
     });
   }
 
@@ -267,16 +309,21 @@
       if (my !== routeToken) { return; }
       var it = d.item;
       var rows = d.scales.map(function (s) {
-        var bad = s.flag === 'different' || s.flag === 'different_product' || s.flag === 'missing';
+        var bad = s.flag === 'different' || s.flag === 'different_product' || s.flag === 'missing' || s.flag === 'unfinished';
         var cls = s.flag === 'same' ? 'ok' : (bad ? 'bad' : (s.flag === 'unsure' ? 'warn' : ''));
-        var tag = s.flag === 'same' ? 'Matches' : (s.flag === 'different_product' ? 'Different product' : (bad ? 'Different' : (s.flag === 'unsure' ? 'Not sure' : 'Unknown')));
+        var tag = s.flag === 'same' ? 'Matches' : (s.flag === 'unfinished' ? 'Not finished' : (s.flag === 'different_product' ? 'Different product' : (bad ? 'Different' : (s.flag === 'unsure' ? 'Not sure' : 'Unknown'))));
         var more = s.last_read ? 'Last read: PLU ' + s.last_read.plu + ', ' + s.last_read.description + ', ' + money(s.last_read.price) +
           (s.last_read_at ? ' (' + fmtTime(s.last_read_at) + ')' : '') : null;
         var extra = s.can_change ? null : 'Changes are turned off for this scale.';
         var box1 = h('div', { class: 'box ' + cls }, h('span', { class: 'tag', text: tag }),
           h('div', { class: 'line', text: s.scale }), h('div', { class: 'more', text: s.text }),
           more ? h('div', { class: 'more', text: more }) : null, extra ? h('div', { class: 'more', text: extra }) : null);
-        if (s.can_fix) {
+        if (s.flag === 'unfinished' && s.repeat) {
+          /* Settling would undo the PLU change on the other scales, so only the repeat is offered. */
+          box1.appendChild(h('button', { class: 'btn second', type: 'button', text: 'Repeat the PLU change', onclick: function () {
+            startRepeat('Repeat the PLU change to ' + it.plu, s.repeat, { kind: 'plu_change', plu: it.plu, old: [] }, '#/item/' + encodeURIComponent(it.plu));
+          } }));
+        } else if (s.can_fix) {
           box1.appendChild(link('#/settle/' + encodeURIComponent(it.plu) + '/' + encodeURIComponent(s.scale), (s.flag === 'different_product' ? 'Bart only: settle this on ' : 'Fix this difference on ') + s.scale, 'btn second'));
         }
         return box1;
@@ -493,16 +540,17 @@
       if (!pv) { holder.appendChild(h('p', { class: 'plain dots', text: 'Getting ready' })); return; }
       if (!pv.ok) {
         holder.appendChild(box('bad', 'Problem', 'This cannot be sent yet.'));
-        pv.errors.forEach(function (e) { holder.appendChild(box('bad', null, e.message)); });
+        pv.errors.forEach(function (e) { holder.appendChild(box('bad', null, e.may_be_frozen ? REBOOT : e.message, e.may_be_frozen ? e.message : null)); });
+        if (pv.repeat) {
+          /* Settling cannot finish a PLU change. The repeat can. */
+          holder.appendChild(h('button', { class: 'btn', type: 'button', text: 'Repeat the PLU change', onclick: function () {
+            startRepeat('Repeat the PLU change to ' + pv.repeat.plu, pv.repeat.change, { kind: 'plu_change', plu: pv.repeat.plu, old: [] }, draft.back);
+          } }));
+        }
         holder.appendChild(back); return;
       }
       var rep = draft.repeat || null;
-      if (rep) {
-        /* The list already holds the new PLU, so the library shows no field change. Say what this finishes. */
-        holder.appendChild(box('warn', 'Repeat', 'Finish the PLU change from ' + rep.before + ' to ' + rep.after + '.',
-          'Scales that already use ' + rep.after + ' are left as they are. A scale still on ' + rep.before + ' gets ' + rep.after +
-          ', and ' + rep.before + ' stops working on it.'));
-      }
+      if (rep) { holder.appendChild(repeatBox(rep)); }
       pv.differences.forEach(function (d) { holder.appendChild(diffBlock(d)); });
 
       var blocked = false; var needed = [];
@@ -513,7 +561,7 @@
       }
       /* A delete or a PLU change stops a PLU working. The block above already says which item.
          Each one needs its own tick, even if the library did not ask for one. */
-      var stopTicked = {};
+      var stopTicked = {}; var repTicked = false;
       pv.warnings.forEach(function (wn, i) {
         var key = 'w:' + wn.code + ':' + i;
         var diff = pv.differences.filter(function (x) { return x.index === wn.index; })[0];
@@ -522,14 +570,25 @@
           if (wn.requires_ack) { stopTicked[diff.index] = true; tick('ack' + i, key, ackText(diff)); }
           return;
         }
-        if (wn.reboot) { holder.appendChild(box('bad', 'Check this', REBOOT, wn.message)); }
+        if (rep && rep.kind === 'plu_change' && wn.code === 'plu_change') {
+          /* Finishing a PLU change shows no field change, so the repeat box above says what it does. */
+          if (wn.requires_ack) { repTicked = true; tick('ack' + i, key, repeatTick(rep)); }
+          return;
+        }
+        if (wn.code === 'gap_filled') {
+          holder.appendChild(box('warn', 'Read this', wn.plain || wn.message));
+          if (wn.requires_ack) { tick('ack' + i, key, 'I understand. Empty slots will be added so there is no gap.'); }
+          return;
+        }
+        if (wn.may_be_frozen) { holder.appendChild(box('bad', 'Check this', REBOOT, wn.message)); }
         else { holder.appendChild(box(wn.requires_ack ? 'warn' : 'working', wn.requires_ack ? 'Read this' : 'Note', wn.message)); }
         if (wn.requires_ack) { tick('ack' + i, key, 'I have read this. Send it anyway.'); }
       });
       pv.differences.forEach(function (d, i) {
         if (stopKind(d) && !stopTicked[d.index]) { tick('stop' + i, 'p:' + d.index, ackText(d)); }
       });
-      if (rep) { tick('repeat', 'r:repeat', 'I understand. PLU ' + rep.before + ' will stop working on a scale that still uses it.'); }
+      /* A repeat of a PLU change always needs its tick. Normally the library asks. If it did not, the page does. */
+      if (rep && rep.kind === 'plu_change' && !repTicked) { tick('repeat', 'r:repeat', repeatTick(rep)); }
       holder.appendChild(h('h2', { text: 'The scales' }));
       pv.scales.forEach(function (name) {
         var read = pv.scales_read.indexOf(name) >= 0;
@@ -543,10 +602,10 @@
       });
       pv.drift.forEach(function (dr, i) {
         var plain = dr.plain || null;   /* staff words from the server for a drift nobody may override */
-        holder.appendChild(box('bad', dr.scale, plain ? plain.plain : dr.message));
+        holder.appendChild(box('bad', dr.scale, plain ? plain.plain : dr.message, plain && plain.note ? plain.note : null));
         if (dr.can_ack) {
           var key = 'd:' + dr.ack_token; needed.push(key);
-          var words = draft.settle ? 'Yes. Settle it this way.' : 'I know this scale is different. Change it anyway.';
+          var words = (plain && plain.tick) || (draft.settle ? 'Yes. Settle it this way.' : 'I know this scale is different. Change it anyway.');
           holder.appendChild(checkbox('dr' + i, words, function (ev) { acked[key] = ev.target.checked; update(); }));
           if (acked[key]) { holder.lastChild.querySelector('input').checked = true; }
         } else {
@@ -556,7 +615,13 @@
             plain ? plain.more : 'Call Bart.'));
         }
       });
-      if (checkError) { holder.appendChild(errorBox(checkError)); }
+      if (checkError) {
+        /* The read check did not run. A change that needs empty slots is refused unless a review showed them. */
+        blocked = true;
+        holder.appendChild(errorBox(checkError));
+        holder.appendChild(box('bad', 'Do not send', 'The scales could not be read for this check, so it cannot be sent yet.'));
+        holder.appendChild(h('button', { class: 'btn', type: 'button', text: 'Check again', onclick: start }));
+      }
 
       var onlyDelete = pv.differences.length > 0 && pv.differences.every(function (d) { return d.action === 'delete'; });
       var sendLabel = onlyDelete ? 'Delete from the scales' : 'Send to the scales';
@@ -619,7 +684,9 @@
 
   /* result */
 
-  /* What a finished PLU change means now. Only a change that every scale confirmed is called done. */
+  /* What a finished PLU change or delete means now. Only work every scale confirmed is called done.
+     A repeat sends only the target, and for a PLU change the PLU. It never sends a price or a name
+     from an old result, because that could put an old value back. */
   function pluResult(d, pid) {
     var out = [];
     if (d.state !== 'finished') { return out; }
@@ -627,6 +694,18 @@
     var everyScale = (d.rows || []).length > 0 && d.rows.every(function (r) { return r.status === 'verified'; });
     (d.changes || []).forEach(function (c) {
       var pc = pluChange(c);
+      if (c.action === 'delete') {
+        var gone = (c.before || {}).plu || c.plu;
+        if (everyScale || !gone || c.item_id === null || c.item_id === undefined) { return; }
+        out.push(box('warn', 'Check this', 'The delete of PLU ' + gone + ' may not have finished on every scale.',
+                     'A scale that is not marked changed and checked has not confirmed it. Until it does, assume PLU ' + gone +
+                     ' still works on that scale. Look at the scale.'));
+        out.push(h('button', { class: 'btn second', type: 'button', text: 'Repeat the delete', onclick: function () {
+          startRepeat('Repeat the delete of ' + gone, { action: 'delete', target_id: c.item_id }, { kind: 'delete', plu: gone, old: [gone] },
+                      '#/result/' + encodeURIComponent(pid));
+        } }));
+        return;
+      }
       if (!pc) { return; }
       if (everyScale) {
         out.push(box('ok', 'Done', 'PLU ' + pc.before + ' is now PLU ' + pc.after + '.',
@@ -634,21 +713,16 @@
         return;
       }
       out.push(box('warn', 'Check this', 'The PLU change from ' + pc.before + ' to ' + pc.after + ' may not have finished on every scale.',
-                   'A scale marked changed and checked uses ' + pc.after + '. Any other scale may still use ' + pc.before +
-                   '. Look at each scale. Do not give ' + pc.before + ' or ' + pc.after + ' to another item until this is done.'));
-      var again = { action: 'edit', target_plu: pc.before, plu: pc.after };
-      var f = c.fields || {};
-      if (f.price) { again.price = f.price.after; }
-      if (f.description) { again.description = f.description.after; }
-      out.push(h('button', { class: 'btn second', type: 'button', text: 'Repeat that edit', onclick: function () {
-        saveDraft({ title: 'Repeat the change of ' + pc.before, changes: [again], back: '#/result/' + encodeURIComponent(pid),
-                    backText: 'Go back', repeat: { before: pc.before, after: pc.after } });
-        location.hash = '#/review';
+                   'A scale marked changed and checked uses ' + pc.after + ', and ' + pc.before + ' no longer works on it. Any other scale may still use ' +
+                   pc.before + ', and ' + pc.before + ' may still work there. Look at each scale. Do not give ' + pc.before + ' or ' + pc.after +
+                   ' to another item until this is done.'));
+      out.push(h('button', { class: 'btn second', type: 'button', text: 'Repeat the PLU change', onclick: function () {
+        startRepeat('Repeat the change of ' + pc.before, { action: 'edit', target_plu: pc.before, plu: pc.after },
+                    { kind: 'plu_change', plu: pc.after, old: [pc.before] }, '#/result/' + encodeURIComponent(pid));
       } }));
     });
     return out;
   }
-
   function renderResult(pid, my) {
     var holder = h('div');
     var net = h('div');
@@ -670,7 +744,7 @@
           h('div', { class: 'line', text: r.text }));
         if (r.now) { b.appendChild(h('div', { class: 'more', text: r.now })); }
         if (r.message && r.state === 'done') { b.appendChild(h('div', { class: 'more', text: r.message })); }
-        if (r.reboot) { b.appendChild(h('div', { class: 'reboot', text: REBOOT })); }
+        if (r.may_be_frozen) { b.appendChild(h('div', { class: 'reboot', text: REBOOT })); }
         holder.appendChild(b);
       });
       if (d.state === 'running') {

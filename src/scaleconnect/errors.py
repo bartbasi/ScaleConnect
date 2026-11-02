@@ -78,6 +78,24 @@ class AcknowledgementRequired(ScaleConnectError):
     exit_code = 6
 
 
+class ReloadDifferences(ScaleConnectError):
+    """A reload would change what a scale last showed, or nobody knows what it holds. Nothing was sent."""
+
+    code = "reload_differences"
+    exit_code = 6
+
+    def __init__(self, message: str = "", differences: Sequence[Any] = (), not_known: Sequence[int] = ()) -> None:
+        super().__init__(message)
+        self.differences = list(differences)
+        self.not_known = list(not_known)
+
+    def to_dict(self) -> dict[str, Any]:
+        out = super().to_dict()
+        out["differences"] = [d.to_dict() for d in self.differences]
+        out["not_known"] = list(self.not_known)
+        return out
+
+
 class InterruptedChange(ScaleConnectError):
     """An earlier change on these items never finished. Someone must look first."""
 

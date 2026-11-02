@@ -69,7 +69,7 @@ The code on the item always follows the PLU. You do not set it.
 
 The new PLU must be 4 digits and cannot already be used by another item. The numbers 9001 to 9500 are set aside and cannot be used.
 
-If one scale did not take the change, the result says so and shows "Repeat that edit". Look at each scale first. Then tap "Repeat that edit" and check the screen. Until every scale says "changed and checked", do not give the old PLU or the new PLU to another item. If the screen says a scale is still on the old PLU and tells you to repeat that edit, open "Recent changes", open that change, and tap "Repeat that edit".
+If one scale did not take the change, the result says so and shows "Repeat the PLU change". See "Not finished work" below.
 
 ## Delete an item
 
@@ -83,6 +83,24 @@ If one scale did not take the change, the result says so and shows "Repeat that 
 If it is the wrong item, tap "Do not delete. Go back." Nothing has been sent yet.
 
 After a delete, the old PLU does nothing on the scales. The page no longer finds the item. A scale that was not changed still has the old item until the result says "changed and checked" for it.
+
+## Not finished work
+
+Sometimes a delete or a PLU change lands on some scales and not on others. Then the home screen shows a red "Not finished" box. The result page and the item page show it too.
+
+The box says which scale has not confirmed the change. Until it does, assume the old PLU still works on that scale. A customer could still be sold that item by the old PLU there.
+
+To finish it:
+
+1. Look at the scale that is named. Check what it shows.
+2. Tap "Repeat the PLU change" or "Repeat the delete".
+3. Read the review screen. It says what will be sent. A repeat of a PLU change sends only the PLU. It does not change the price or the name.
+4. Tick the box that says you understand.
+5. Tap "Send to the scales". Read the line for each scale.
+
+The box goes away only when every scale has confirmed. Until then, do not give the old PLU or the new PLU to another item.
+
+Do not use "Fix this difference" on a scale that is in a "Not finished" box. The page does not offer it there, because it would undo the change on the other scales.
 
 ## What "UNUSED" means
 
@@ -111,7 +129,10 @@ You see one line for each scale.
 | The scale holds something different from our list | Nothing was sent. | Tell Bart. Do not force it. |
 | Changes are turned off for this scale | Nothing was sent to this scale. | Tell Bart. That scale still has the old price. |
 | This action is not available | Nothing was sent. | Ask Bart. |
-| An earlier PLU change did not finish on this scale | Nothing was sent. The scale is still on the old PLU. | Repeat that earlier edit. See "Change a PLU". |
+| An earlier PLU change did not finish on this scale | Nothing was sent. The scale is still on the old PLU, and the old PLU still works on it. | Tap "Repeat the PLU change". See "Not finished work". |
+| This scale gave back fewer items than our list has | Nothing was sent. The scale differs from our list, and a person must look at it. | Tell Bart. Do not force it. See "If a scale differs from the list". |
+| This scale has gaps where our list has items | Nothing was sent. The scale differs from our list, and a person must look at it. | Tell Bart. Do not force it. See "If a scale differs from the list". |
+| This change would have added empty slots, and no review showed that | Nothing was sent. | Go back. Review it again and wait until the scales say Checked. |
 | This scale already has that PLU on a different item | Nothing was sent. | Tell Bart. Do not force it. |
 | The scale did not answer. It may need a reboot. | The scale may have frozen. A reboot means turning it off and on again. | Tell Bart. See below. |
 
@@ -133,6 +154,21 @@ Never tell a customer a price is changed until every scale says "changed and che
 
 If one scale says "could not connect", wait a minute. A scale can be busy for about 10 seconds after a change.
 
+## If a scale differs from the list
+
+Sometimes the page says a scale "differs from the list", or "gave back fewer items than our list has", or "has gaps where our list has items". It may add that a person must look at it.
+
+This means the scale and our list do not agree about which items it holds. Sending a change could put empty slots over real items. So nothing was sent to that scale.
+
+1. Do not try again and again. Do not tick your way past it. The page does not let you force it.
+2. Look at the scale. Check the price of the item you wanted to change.
+3. Tell Bart which scale it was, and what the page said.
+4. Bart looks at the scale against the list. Bart can reload the scale from the command line.
+
+Other scales may have taken the change. Read the line for each scale.
+
+If the page asks you to tick "Empty slots will be added so there is no gap", it means that scale has no item at some numbers, and empty slots named UNUSED will be put there so there is no gap. Read which numbers it names. If it surprises you, do not tick. Tell Bart.
+
 ## If a scale may need a reboot
 
 Sometimes the page says: "The scale did not answer. It may need a reboot. Tell Bart."
@@ -145,7 +181,7 @@ This means the scale stopped answering the page. It may have frozen. It can stil
 
 Nothing was changed on a scale that did not answer, unless the line for that scale says otherwise. Check the price on the scale display.
 
-For Bart: the reload command is in `docs/CLI.md`.
+For Bart: the reload command is in `docs/CLI.md`. Do not read the scale again until it has been checked.
 
 Never touch the scale's calibration or settings. ScaleConnect does not change them.
 

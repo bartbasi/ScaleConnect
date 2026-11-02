@@ -29,6 +29,7 @@ READ_TOOLS = {
     "scale_preview_settle_drift",
     "scale_preview_mark_orphan",
 }
+LOCAL_READ_TOOLS = {"scale_list_scales", "scale_search_items", "scale_get_item", "scale_get_change"}
 WRITE_TOOLS = {"scale_apply_changes", "scale_resolve_interrupted_change", "scale_mark_orphan"}
 
 
@@ -96,11 +97,12 @@ def test_lists_every_tool(env):
     assert names == READ_TOOLS | WRITE_TOOLS
 
 
-def test_read_tools_are_marked_read_only_and_writes_destructive(env):
+def test_only_tools_that_contact_no_scale_are_marked_read_only_and_writes_destructive(env):
     tools = {tool.name: tool for tool in tools_of(build_server(env.svc))}
     for name in READ_TOOLS:
-        assert tools[name].annotations.read_only_hint is True, name
         assert tools[name].annotations.destructive_hint is False, name
+        assert tools[name].annotations.read_only_hint is (name in LOCAL_READ_TOOLS), name
+        assert tools[name].annotations.idempotent_hint is (name in LOCAL_READ_TOOLS), name
     for name in WRITE_TOOLS:
         assert tools[name].annotations.read_only_hint is False, name
         assert tools[name].annotations.destructive_hint is True, name

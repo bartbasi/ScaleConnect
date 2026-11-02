@@ -359,7 +359,7 @@ def test_the_service_has_no_way_to_put_a_placeholder_on_an_orphan(env):
         p = env.svc.preview_changes([change])
         assert not p.ok and p.errors[0].code == "item_not_found"
     assert not env.svc.preview_settle_drift(scale="A", take="catalog", id=4).ok
-    assert env.svc.reload_scale("A", requested_by="test").left_above == (4,)
+    assert env.svc.reload_scale("A", accept_differences=True, requested_by="test").left_above == (4,)
     assert fake.item(4) == orphan
 
 
@@ -441,41 +441,60 @@ def test_an_add_over_a_placeholder_the_catalog_never_knew_is_no_drift(env):
 # ---------------------------------------------------------------- never leave a gap
 
 
+def fill_needed_on_b(make_env, *, b_extra=()):
+    """A holds an orphan at id 8. B ends at id 3, and the catalog lists nothing at 4 to 7, so an add at 8 must fill there on B."""
+    env = make_env({"A": True, "B": True}, seed=seed_of(3))
+    env.fakes["A"].preload(*[placeholder_row(i) for i in range(4, 8)], row(Item(8, "1777", "1777", "Old Test", "1.00", timestamp=STAMP)))
+    env.fakes["B"].preload(*b_extra)
+    assert env.svc.mark_orphans_from_read("A").marked == (8,)
+    return env, [{"action": "add", "plu": "1888", "description": "New", "price": "2.00", "replace_orphan_id": 8}]
+
+
 def test_a_write_past_the_end_fills_the_ids_between_in_the_same_send(make_env):
-    env = make_env({"A": True}, seed=seed_of(8), preload=False)
-    fake = env.fakes["A"]
-    fake.preload(*[row(i) for i in seed_of(3)])  # the catalog lists 1 to 8, and this scale holds only 1 to 3
-    rec = env.change([{"action": "edit", "target_plu": "1008", "price": "12.00"}])
-    assert env.statuses(rec) == {"A": "verified"}
-    sent = [r[0] for m in fake.messages_of("GP") for r in m.records]
-    assert sent == ["4", "5", "6", "7", "8"], "in id order, so a send that stops early leaves no gap"
+    env, add = fill_needed_on_b(make_env)
+    fake = env.fakes["B"]
+    rec = env.change(add, ack=True, read_scales=True)
+    assert env.statuses(rec) == {"A": "verified", "B": "verified"}
+    assert sent_ids_of(fake) == [4, 5, 6, 7, 8], "in id order, so a send that stops early leaves no gap"
     assert len(fake.messages_of("RI")) == 1, "one session"
     for i in (4, 5, 6, 7):
         assert is_placeholder_on(fake, i)
-    assert fake.item(8)[4] == "12.00"
-    assert "ids 4 to 7 got placeholders" in rec.scale_results[0].message
-    assert "confirmed" in rec.scale_results[0].message
+    assert fake.item(8)[2] == "1888"
+    message = rec.scale_results[1].message
+    assert "ids 4 to 7 got placeholders" in message and "confirmed" in message
+    assert rec.scale_results[1].fillers_landed == (4, 5, 6, 7)
 
 
 def test_a_preview_that_reads_names_the_scale_and_ids_it_would_fill(make_env):
-    env = make_env({"A": True, "B": True}, seed=seed_of(3), preload=False)
-    env.fakes["A"].preload(*[row(i) for i in seed_of(3)])
-    env.fakes["B"].preload(row(seed_of(1)[0]))
-    p = env.preview([{"action": "add", "plu": "1888", "description": "New", "price": "2.00"}], read_scales=True)
+    env, add = fill_needed_on_b(make_env)
+    p = env.preview(add, read_scales=True)
     filled = [w for w in p.warnings if w.code == "gap_filled"]
-    assert p.differences[0].item_id == 4 and len(filled) == 1
-    assert not filled[0].requires_ack
-    assert "B holds nothing at id 2 to 3" in filled[0].message
+    assert len(filled) == 1 and filled[0].requires_ack, "a real gap fill needs a yes"
+    assert "B holds nothing at id 4 to 7" in filled[0].message
     assert not env.fakes["A"].messages_of("GP") and not env.fakes["B"].messages_of("GP")
-    rec = env.svc.apply_change(p.preview_id)
-    assert env.statuses(rec) == {"A": "verified", "B": "verified"}
-    assert sent_ids_of(env.fakes["A"]) == [4] and sent_ids_of(env.fakes["B"]) == [2, 3, 4]
+    with pytest.raises(errors.AcknowledgementRequired):
+        env.svc.apply_change(p.preview_id)
+    assert not env.fakes["B"].messages_of("GP")
 
 
-def test_a_preview_with_no_read_says_nothing_about_a_gap(make_env):
-    env = make_env({"A": True}, seed=seed_of(3), preload=False)
-    p = env.preview([{"action": "add", "plu": "1888", "description": "New", "price": "2.00"}])
-    assert "gap_filled" not in {w.code for w in p.warnings} and env.silent("A")
+def test_a_preview_with_no_read_says_nothing_about_a_gap_and_apply_will_not_fill(make_env):
+    env, add = fill_needed_on_b(make_env)
+    p = env.preview(add)
+    assert "gap_filled" not in {w.code for w in p.warnings}
+    rec = env.svc.apply_change(p.preview_id, True)
+    assert env.statuses(rec) == {"A": "verified", "B": "drift_refused"}
+    assert [d.kind for d in rec.scale_results[1].drift] == ["fill_not_previewed"]
+    assert rec.scale_results[1].drift[0].ack_token is None
+    assert "no preview showed that" in rec.scale_results[1].message
+    assert not env.fakes["B"].messages_of("GP")
+
+
+def test_a_fill_larger_than_the_preview_showed_is_refused_too(make_env):
+    env, add = fill_needed_on_b(make_env)
+    p = env.preview(add, read_scales=True)
+    env.fakes["B"].remove(3)  # the catalog expects 3 there, so this read now ends early
+    rec = env.svc.apply_change(p.preview_id, True)
+    assert env.statuses(rec)["B"] == "drift_refused" and not env.fakes["B"].messages_of("GP")
 
 
 def test_a_preview_with_nothing_to_fill_says_nothing_about_a_gap(env):
@@ -484,10 +503,9 @@ def test_a_preview_with_nothing_to_fill_says_nothing_about_a_gap(env):
 
 
 def test_a_preview_shows_a_filler_whose_plu_is_taken_as_drift(make_env):
-    env = make_env({"A": True}, seed=seed_of(6), preload=False)
-    env.fakes["A"].preload(row(seed_of(1)[0]), row(Item(2, "9005", "9005", "Old Test", "1.00", timestamp=STAMP)))
-    p = env.preview([{"action": "edit", "target_plu": "1006", "price": "12.00"}], read_scales=True)
-    assert [d.kind for d in p.drift] == ["plu_on_other_id"] and p.drift[0].item_id == 5
+    env, add = fill_needed_on_b(make_env, b_extra=[row(Item(3, "9005", "9005", "Old Test", "1.00", timestamp=STAMP))])
+    p = env.preview(add, read_scales=True)
+    assert [(d.scale, d.kind, d.item_id) for d in p.drift] == [("B", "plu_on_other_id", 5)]
 
 
 def test_a_write_right_after_the_last_id_needs_no_filling(env):
@@ -497,19 +515,9 @@ def test_a_write_right_after_the_last_id_needs_no_filling(env):
     assert "placeholders" not in rec.scale_results[0].message
 
 
-def test_a_scale_holding_nothing_gets_a_full_fill_up_to_the_id(make_env):
-    env = make_env({"A": True}, seed=seed_of(7), preload=False)
-    fake = env.fakes["A"]
-    rec = env.change([{"action": "edit", "target_plu": "1007", "price": "12.00"}])
-    assert env.statuses(rec) == {"A": "verified"}
-    assert fake.accepted_ids() == [1, 2, 3, 4, 5, 6, 7]
-    assert fake._gap_at() is None
-
-
 def test_a_filler_placeholder_that_does_not_land_stops_it_being_called_verified(make_env):
-    env = make_env({"A": True}, seed=seed_of(8), preload=False)
-    fake = env.fakes["A"]
-    fake.preload(*[row(i) for i in seed_of(3)])
+    env, add = fill_needed_on_b(make_env)
+    fake = env.fakes["B"]
     real = fake._handle
 
     def lose_a_filler(conn, raw):
@@ -519,19 +527,30 @@ def test_a_filler_placeholder_that_does_not_land_stops_it_being_called_verified(
         return result
 
     fake._handle = lose_a_filler
-    rec = env.change([{"action": "edit", "target_plu": "1008", "price": "12.00"}])
-    result = rec.scale_results[0]
+    rec = env.change(add, ack=True, read_scales=True)
+    result = rec.scale_results[1]
     assert result.status == "mismatch" and not rec.success and not rec.verified
     assert [d.item_id for d in result.mismatches] == [6]
 
 
 def test_a_filler_refused_for_a_taken_plu_stops_the_whole_scale(make_env):
-    env = make_env({"A": True}, seed=seed_of(6), preload=False)
-    fake = env.fakes["A"]
-    fake.preload(row(seed_of(1)[0]), row(Item(2, "9005", "9005", "Old Test", "1.00", timestamp=STAMP)))
-    rec = env.change([{"action": "edit", "target_plu": "1006", "price": "12.00"}])
-    assert env.statuses(rec) == {"A": "drift_refused"} and not fake.messages_of("GP")
+    env, add = fill_needed_on_b(make_env, b_extra=[row(Item(3, "9005", "9005", "Old Test", "1.00", timestamp=STAMP))])
+    rec = env.change(add, ack=True, read_scales=True)
+    assert env.statuses(rec)["B"] == "drift_refused" and not env.fakes["B"].messages_of("GP")
 
+
+def test_fillers_that_landed_before_an_error_are_not_called_nothing_landed(make_env):
+    env = make_env({"A": True, "B": True}, seed=seed_of(3))
+    env.fakes["A"].preload(*[placeholder_row(i) for i in range(4, 12)], row(Item(12, "1777", "1777", "Old Test", "1.00", timestamp=STAMP)))
+    assert env.svc.mark_orphans_from_read("A").marked == (12,)
+    fake = env.fakes["B"]
+    fake.error_on_ids(12)  # the first batch of placeholders is kept. The batch with the record gets Error
+    add = [{"action": "add", "plu": "1888", "description": "New", "price": "2.00", "replace_orphan_id": 12}]
+    rec = env.change(add, ack=True, read_scales=True, scales=["B"])
+    result = rec.scale_results[0]
+    assert sorted(fake.items)[:8] == [1, 2, 3, 4, 5, 6, 7, 8] and result.fillers_landed == (4, 5, 6, 7, 8)
+    assert result.status != "verified" and rec.outcome == "partial", "not failed, because placeholders landed"
+    assert "B took placeholders at id 4 to 8" in rec.display
 
 def test_a_gap_already_on_the_table_is_reported_and_left_alone(make_env):
     env = make_env({"A": True}, seed=seed_of(6))
@@ -547,7 +566,7 @@ def test_a_gap_already_on_the_table_is_reported_and_left_alone(make_env):
 
 
 def reload_of(env, name="A"):
-    return env.svc.reload_scale(name, requested_by="test")
+    return env.svc.reload_scale(name, accept_differences=True, requested_by="test")
 
 
 def test_reload_on_an_empty_scale_sends_everything_with_no_read_first(make_env):
@@ -618,7 +637,9 @@ def test_reload_flags_a_plu_left_on_two_ids(env):
     fake = env.fakes["A"]
     fake.preload(*[placeholder_row(i) for i in range(4, 8)], row(SEED[0].replace(id=8)))
     result = reload_of(env)
-    assert result.status == "verified" and not result.ok and result.duplicate_plus == ("1001",)
+    assert result.status == "mismatch" and not result.ok and result.duplicate_plus == ("1001",)
+    record = env.svc.get_change(result.change_id)
+    assert not record.verified and not record.success, "a PLU on two ids is not verified, in the log either"
 
 
 def test_reload_does_not_change_the_catalog(env):
@@ -708,7 +729,7 @@ def test_reload_when_the_read_freezes_says_reboot_and_does_not_keep_trying(make_
     fake = env.fakes["A"]
     result = reload_of(env)
     assert result.status == "accepted_not_verified" and not result.ok
-    assert "may be frozen" in result.message and "reboot" in result.message and "Not tried again" in result.message
+    assert "may be frozen" in result.message and "reboot" in result.message and "stopped trying" in result.message and result.may_be_frozen
     assert fake.frozen and len(fake.messages_of("LP")) == 1, "once blocks have come, a stall ends it"
     assert env.catalog.scale_states(1)["A"]["belief"] == "unknown"
 
@@ -786,7 +807,7 @@ def test_cli_reload_refuses_a_scale_that_is_not_write_enabled(tmp_path, make_fak
 
 def test_cli_reload_runs_and_reports(tmp_path, make_fake, capsys):
     fake = make_fake()
-    code, out = run_cli(capsys, "--config", write_config(tmp_path, fake), "reload", "--scale", "A", "--yes", "--who", "bart")
+    code, out = run_cli(capsys, "--config", write_config(tmp_path, fake), "reload", "--scale", "A", "--yes", "--accept-differences", "--who", "bart")
     assert code == 0 and out["ok"] and out["status"] == "verified" and out["top_id"] == 3
     assert "Ids 1 to 3 now match the catalog" in out["message"]
     assert fake.accepted_ids() == [1, 2, 3]
@@ -795,7 +816,7 @@ def test_cli_reload_runs_and_reports(tmp_path, make_fake, capsys):
 
 def test_cli_reload_that_is_not_verified_exits_7(tmp_path, make_fake, capsys):
     fake = make_fake(freeze_lp_at_id=1)
-    code, out = run_cli(capsys, "--config", write_config(tmp_path, fake), "reload", "--scale", "A", "--yes")
+    code, out = run_cli(capsys, "--config", write_config(tmp_path, fake), "reload", "--scale", "A", "--yes", "--accept-differences")
     assert code == 7 and out["status"] == "accepted_not_verified" and "reboot" in out["message"]
     fake.reboot()
 

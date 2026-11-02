@@ -47,7 +47,7 @@ CSP = (
 
 ADD_KEYS = {"plu", "description", "price", "sold_by", "replace_orphan_id"}
 EDIT_KEYS = {"target_plu", "description", "price", "plu"}
-DELETE_KEYS = {"target_plu"}
+DELETE_KEYS = {"target_plu", "target_id"}  # target_id only for repeating a delete the catalog no longer lists
 ALLOWED_KEYS = {"add": ADD_KEYS, "edit": EDIT_KEYS, "delete": DELETE_KEYS}
 
 
@@ -110,7 +110,7 @@ def _clean_changes(raw: list[dict[str, Any]]) -> tuple[list[dict[str, str]], lis
             if key not in allowed:
                 problems.append({"code": "invalid_field", "message": f"The field {key} cannot be sent from this page.", "index": index, "field": key})
                 bad = True
-            elif key == "replace_orphan_id":
+            elif key in ("replace_orphan_id", "target_id"):
                 if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 500:
                     problems.append({"code": "invalid_id", "message": "The scale id must be a whole number from 1 to 500.", "index": index, "field": key})
                     bad = True
@@ -300,6 +300,8 @@ def create_app(
     def item(plu: str):
         view = service.get_item(plu=plu)
         shown = view.item
+        # From the catalog, with no scale contact. A scale behind a PLU change must be finished, never settled.
+        behind = {(u.scale, u.item_id): u for u in service.list_unfinished() if u.kind == "plu_change"}
         rows = []
         for info in service.list_scales():
             state_ = view.scales.get(info.name)
@@ -313,6 +315,7 @@ def create_app(
                 "last_read": None,
                 "last_read_at": None,
                 "can_fix": False,
+                "repeat": None,
             }
             if state_ is not None:
                 read = state_.last_read
@@ -336,6 +339,13 @@ def create_app(
                     row.update(flag="unsure", text=f"Last change: {words_}")
                 if state_.belief == "unknown" and row["flag"] not in ("different", "different_product", "missing"):
                     row.update(flag="unsure", text="Not sure what is on this scale. " + (row["text"] if row["flag"] == "unsure" else ""))
+            late = behind.get((info.name, shown.id))
+            if late is not None:
+                olds = [o for o in late.old_plus if o.isdigit() and len(o) == 4]
+                old_text = ", ".join(olds) if olds else "the old PLU"
+                row.update(flag="unfinished", can_fix=False, repeat=dict(late.repeat), text=(
+                    f"An earlier PLU change did not finish on this scale. The old PLU ({old_text}) may still work on it. "
+                    "Repeat that PLU change. Do not settle it."))
             rows.append(row)
         interrupted = []
         for change_id in view.interrupted_change_ids:
@@ -357,8 +367,9 @@ def create_app(
         """Mark each drift as one a person may acknowledge or not, and remember the ones they may not."""
         blocked: set[str] = set()
         for warning in data.get("warnings", []):
-            # A read with no reply may mean the scale froze. The page says so plainly.
-            warning["reboot"] = words.may_need_reboot(warning.get("message"))
+            # A read with no reply may mean the scale froze. The library says so in may_be_frozen. The page says it plainly.
+            if warning.get("code") == "gap_filled":
+                warning["plain"] = words.gap_text(warning.get("message"))
         for drift in data.get("drift", []):
             drift["different_product"] = words.is_different_product(drift)
             # Settling is how a person resolves a different product, so it keeps its token. A change never does.
@@ -397,8 +408,22 @@ def create_app(
             return problem
         result = service.preview_settle_drift(scale=body.scale, take=body.take, plu=body.plu, requested_by="web")
         data = result.to_dict()
-        data["errors"] = words.plain_errors(data.get("errors", []))
+        behind = [d for d in data.get("drift", []) if words.is_unfinished_move(d)]
+        unfinished = bool(behind) or any(e.get("code") == "plu_change_not_finished" for e in data.get("errors", []))
+        data["errors"] = words.plain_errors(data.get("errors", []), unfinished)
+        data["repeat"] = None
+        if unfinished:
+            # Settling cannot finish a PLU change. Hand the page the repeat that can.
+            for u in service.list_unfinished():
+                if u.kind == "plu_change" and u.scale == body.scale and (not behind or u.item_id == behind[0].get("item_id")):
+                    data["repeat"] = {"change": dict(u.repeat), "plu": u.plu}
+                    break
         return remember(result, data, settle=True)
+
+    @app.get("/api/unfinished")
+    def unfinished_work():
+        """Deletes and PLU changes some scale has not confirmed. From the catalog, no scale contact."""
+        return {"items": words.unfinished_cards(service.list_unfinished())}
 
     @app.post("/api/check")
     def check(body: CheckBody, request: Request):
@@ -408,7 +433,7 @@ def create_app(
             return problem
         reads = service.read_scale_items(plus=[body.plu])
         # No raw messages: they can hold scale details. Staff get plain words, and a reboot flag.
-        return {"scales": [words.read_row(r.scale, r.status, r.message) for r in reads]}
+        return {"scales": [words.read_row(r.scale, r.status, r.may_be_frozen) for r in reads]}
 
     @app.post("/api/orphan")
     def mark_orphan(body: OrphanBody, request: Request):
