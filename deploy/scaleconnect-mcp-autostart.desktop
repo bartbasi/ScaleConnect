@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Scale MCP server (start it)
+Comment=Starts the ScaleConnect MCP server when the desktop starts, so Claude can reach the scales. It does not open a window.
+Exec=sh -c 'sh "$HOME/CCScaleApp/ScaleConnect/deploy/scaleconnect-mcp.sh" start'
+Icon=applications-internet
+Terminal=false
+Hidden=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

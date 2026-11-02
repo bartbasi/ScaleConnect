@@ -1,0 +1,678 @@
+# ScaleConnect library interface
+
+This is the interface the MCP server, web page and command line tool are built on. They call `ScaleConnectService` and nothing below it. driver-dev owns this file. To change it, tell the lead.
+
+Only `scale.py` opens a socket to a scale. Interfaces never import `scale.py` or `protocol.py`.
+
+## What interfaces must do
+
+1. Never show `success` alone. Show `display`, then each scale's status. `accepted_not_verified` is a partial result, never "confirmed".
+2. Plan for slow calls. `apply_change` holds the caller until every scale is done, and it reports the change id only at the end. Allow several minutes. See "How long things take". If a client loses the connection, `get_change_for_preview(preview_id)` finds the result.
+3. Show a preview before any apply, and pass acknowledgements only after a person, or Claude acting for one, has seen what they name.
+4. Read `capabilities()` every time. Do not hard code it.
+5. Refuse to run the web page or MCP server when `config.pin` or `config.mcp_token` is `None`. The example value `change-me` loads as `None`.
+
+## Quick start
+
+```python
+from scaleconnect.service import ScaleConnectService
+from scaleconnect.errors import ScaleConnectError
+
+svc = ScaleConnectService.open()          # reads ~/.config/scaleconnect/config.toml
+svc.capabilities().to_dict()
+svc.list_scales()
+svc.search_items("4001")
+preview = svc.preview_changes(
+    [{"action": "edit", "target_plu": "4001", "price": "9.99"}],
+    requested_by="mcp:claude",
+    read_scales=True,                     # optional. Shows drift now, and takes longer
+)
+if preview.ok:
+    record = svc.apply_change(
+        preview.preview_id,
+        acknowledge_warnings=False,
+        acknowledge_drift=[],             # tokens from Drift.ack_token
+        requested_by="mcp:claude",
+    )
+    print(record.display)
+    for result in record.scale_results:
+        print(result.scale, result.status)
+svc.close()
+```
+
+Every model has `to_dict()`, which returns plain JSON safe values. Prices are always text. Nothing in a result is a float. The service is safe to share between threads.
+
+## Models (`scaleconnect.models`)
+
+All are frozen dataclasses. Do not redefine them.
+
+### Item
+
+```python
+Item(
+    id: int,
+    code: str,
+    plu: str,
+    description: str,
+    price: str,                    # "9.99". A float raises TypeError
+    field6: str = "",              # "" or " " on real items. Keep what the item has
+    fields_7_12: tuple[str, ...] = ("1", "1", "0", "0", "0", "0"),
+    timestamp: str = "",           # "YYYY-MM-DD HH:MM:SS"
+    fields_14_20: tuple[str, ...] = ("0", "0", "0", "0", "0", "0", "0"),
+)
+Item.to_fields() -> list[str]            # the 20 scale fields, in order
+Item.from_fields(fields) -> Item         # from 20 text values
+Item.to_dict() -> dict                   # keys as above. Tuples become lists
+Item.from_dict(d) -> Item
+Item.replace(**changes) -> Item          # a new item
+```
+
+Building an `Item` checks only its shape. A record read from a scale can hold odd values, and they are reported as they are. The rules on values live in the service.
+
+### Change
+
+The input to a preview. Pass either `Change` objects or plain dicts with the same keys.
+
+```json
+{"action": "add", "plu": "4001", "description": "Example Cheese", "price": "12.50"}
+{"action": "add", "plu": "4002", "description": "Example Piece", "price": "3.00", "sold_by": "piece"}
+{"action": "add", "plu": "4003", "description": "Example", "price": "3.00", "replace_orphan_id": 490}
+{"action": "edit", "target_plu": "4001", "price": "12.75"}
+{"action": "edit", "target_id": 7, "description": "New Name", "price": "4.00"}
+{"action": "delete", "target_plu": "4002"}
+```
+
+```python
+Change(
+    action: str,                   # "add", "edit" or "delete"
+    target_plu: str | None = None, # edit and delete: which item, by PLU
+    target_id: int | None = None,  # edit and delete: which item, by id
+    plu: str | None = None,        # add: required. edit: on hold, see below
+    code: str | None = None,       # optional. Must equal the PLU
+    description: str | None = None,# add: required. edit: optional
+    price: str | Decimal | None = None,  # add: required. edit: optional. Never a float
+    sold_by: str | None = None,    # add only: "weight" (default) or "piece". Sets field 7
+    replace_orphan_id: int | None = None,  # add only: reuse an id recorded as an orphan
+)
+Change.from_dict(d) -> Change      # raises ValidationFailed on unknown keys or a float price
+Change.to_dict() -> dict
+```
+
+Rules:
+
+- An edit gives `target_plu` or `target_id`, not both, and at least one field.
+- An edit can change only price and description today. Other fields of the record are never set by a caller.
+- **Changing a PLU or Code is on hold.** A preview gives the error `plu_edit_held`. Hard rule 7 says PLU and Code are the same number, and a Code change has not been proven safe on a scale. Until Bart decides, or a FRONT test proves it, staff must use ScaleLink for a PLU change.
+- An add takes the lowest unused id from the catalog. Callers pick an id only through `replace_orphan_id`, which must be a recorded orphan and gives a warning that needs acknowledging.
+- A new item takes `sold_by`. All its other fields take the defaults.
+
+### Statuses
+
+```python
+class ScaleStatus(StrEnum):
+    VERIFIED = "verified"
+    ACCEPTED_NOT_VERIFIED = "accepted_not_verified"
+    REJECTED = "rejected"
+    UNKNOWN = "unknown"
+    UNREACHABLE = "unreachable"
+    SKIPPED_NOT_WRITE_ENABLED = "skipped_not_write_enabled"
+    NOT_AVAILABLE = "not_available"
+    WRONG_SCALE = "wrong_scale"
+    MISMATCH = "mismatch"
+    DRIFT_REFUSED = "drift_refused"
+    READ_FAILED = "read_failed"
+```
+
+| Status | Show staff | Could it have changed the scale? |
+|---|---|---|
+| `verified` | The scale said Ok, and reading it back matched every field | Yes, as shown |
+| `accepted_not_verified` | The scale said Ok, but it could not be read back. Check the scale | Probably |
+| `rejected` | The scale said Error, and reading it back shows it did not change | No |
+| `unknown` | The connection failed, the reply could not be trusted, or the scale said Error and either kept the record or could not be read back. Check the scale, or run a comparison | Maybe, or yes |
+| `mismatch` | The scale said Ok, but holds something different. See `mismatches` | Yes |
+| `unreachable` | Could not connect, or the opening steps failed. No item was sent | No |
+| `read_failed` | Could not read the scale first. Nothing was written | No |
+| `wrong_scale` | The serial at that address does not match the config. Nothing was written | No |
+| `drift_refused` | The scale holds a different product, differs and nobody acknowledged it, or holds something in the way. Nothing was written. See `drift` | No |
+| `skipped_not_write_enabled` | Writes are off for this scale. Nothing was sent | No |
+| `not_available` | This operation is not available yet | No |
+
+A scale's status is the worst of its items, in this order: `wrong_scale`, `unknown`, `mismatch`, `rejected`, `drift_refused`, `read_failed`, `unreachable`, `not_available`, `skipped_not_write_enabled`, `accepted_not_verified`, `verified`.
+
+`ItemResult.status` is one of these or `not_sent`, which means an earlier problem on that scale stopped this record. A record never sent is never a success: a scale with `not_sent` beside `verified` items reports `unknown`, and the change cannot be `success`. `ItemView.scales[...].status` can also be `not_sent` or `seed`.
+
+`verified` needs both an `Ok` and a matching read. When a batch gets `Error`, each record is settled by the read back. If it shows the old record, that record is `rejected`. If it shows the new record, or the read back fails, that record is `unknown`, because the scale may have kept it. So `rejected`, and the outcome `failed`, always rest on proof.
+
+After a stall or lost connection the status stays `unknown`, and the scale is not read right away, because it may still be working. The next attempt, or `compare_scales`, shows what landed.
+
+### Capabilities
+
+```python
+Capabilities(add: bool, edit: bool, delete: bool, read: bool, verify: bool, notes: dict[str, str])
+```
+
+```json
+{"add": true, "edit": true, "delete": false, "read": true, "verify": true,
+ "notes": {"delete": "Not available yet. ..."}}
+```
+
+Show `notes[...]` next to any control you hide or disable.
+
+### ScaleInfo
+
+```python
+ScaleInfo(name: str, write_enabled: bool, last_status: str | None, last_change_id: str | None,
+          last_seen_at: str | None, last_message: str | None,
+          read_enabled: bool, interrupted_change_ids: tuple[str, ...])
+```
+
+`last_*` come from the change log. `list_scales` never contacts a scale. The address and serial are not included, and no message holds a serial. `read_enabled` is true if the library may contact this scale at all, which also holds for any write enabled scale. If `interrupted_change_ids` is not empty, show it. See "Interrupted changes".
+
+### ItemView
+
+```python
+ItemView(item: Item, scales: dict[str, ScaleItemState], source: str, interrupted_change_ids: tuple[str, ...])
+ScaleItemState(scale: str, status: str | None, belief: str | None, change_id: str | None, at: str | None,
+               last_read: Item | None, last_read_at: str | None,
+               last_read_matches: bool | None, last_read_found_nothing: bool)
+```
+
+`source` is `"catalog"`. The catalog is what we want. It is not proof of what a scale holds. `last_read` is the last record read from that scale for this id, and `last_read_at` is when. If `last_read` is `None` and `last_read_at` is set, that read found nothing at this id. If both are `None`, no read has reached this id. `last_read_found_nothing` says the first of these directly. `last_read_matches` compares all 20 fields with the catalog's record, and is `None` if there is no record to compare. Use it, and do not compare a few fields yourself: the same name and price can be another product. `belief` is `present` only after a read showed it, `unknown` after a bare `Ok`, a failure or anything unsettled, and `absent` if we know it never arrived. A scale with no entry has nothing recorded.
+
+### Drift
+
+What one scale holds that differs from what was expected.
+
+```python
+Drift(
+    scale: str,
+    kind: str,
+    item_id: int | None,
+    plu: str | None,
+    fields: dict[str, FieldDiff],
+    held: Item | None,             # what the scale holds
+    message: str,                  # plain words, with the fields and values
+    ack_token: str | None,         # None means no acknowledgement can allow it
+)
+FieldDiff(before: str | None, after: str | None)
+```
+
+| `kind` | Meaning | `before` and `after` | Can be acknowledged |
+|---|---|---|---|
+| `differs` | The same product, by PLU and Code, with other fields different from the catalog | catalog, scale | Yes |
+| `different_product` | The PLU or Code at that id differs from the catalog, so it is another product | catalog, scale | No. Only settling resolves it |
+| `plu_on_other_id` | The PLU to be written is on this scale under another id | none | No |
+| `id_occupied` | An add's id holds something on this scale, and it is not a recorded orphan | none | No |
+| `missing` | From `compare_scales` and `preview_settle_drift`. The scale holds nothing at an id the catalog lists | none | Not needed |
+| `not_in_catalog` | From `compare_scales` and `read_scale_items`. The scale holds an id the catalog does not list | none | Not applicable |
+| `mismatch` | After a write, the scale holds something other than what was sent | sent, scale | Not applicable |
+| `still_differs` | In `ChangeRecord.still_differ`. The change landed, and this scale kept other values than the catalog | catalog, scale | Not applicable |
+
+A price must never land on a different product, so a write refuses `different_product` whatever is acknowledged. Show that it needs settling, and offer no checkbox: `ack_token` is `None` from a compare, a read or a write.
+
+An edit where the scale holds nothing at the id goes as an add there. It needs no acknowledgement, and the preview warns with `missing_on_scale`. The whole table is read for it, and a PLU found under another id refuses that scale with `plu_on_other_id`.
+
+An `ack_token` names one scale, one id and exactly what that scale held. If the scale's record changes again, the old token no longer matches. Acknowledging drift never copies anything between scales. The record sent is that scale's own record with only the requested fields changed, plus a new timestamp, so the difference stays on that scale, and the result says so in `still_differ`. For `missing` the record comes from the catalog.
+
+### Preview
+
+```python
+Preview(
+    ok: bool,                      # False if any error. preview_id is then None
+    preview_id: str | None,
+    created_at: str,               # ISO 8601 with offset
+    expires_at: str | None,
+    requested_by: str,
+    scales: tuple[str, ...],       # targeted scale names, in send order
+    differences: tuple[Difference, ...],
+    warnings: tuple[PreviewWarning, ...],
+    errors: tuple[PreviewError, ...],
+    drift: tuple[Drift, ...],      # only if read_scales was True
+    scales_read: tuple[str, ...],  # which scales were read for it. Empty means drift was not checked
+)
+Difference(index: int, action: str, item_id: int | None, plu: str | None,
+           fields: dict[str, FieldDiff], before: Item | None, after: Item | None)
+PreviewWarning(code: str, message: str, requires_ack: bool, index: int | None)
+PreviewError(code: str, message: str, index: int | None, field: str | None)
+```
+
+`Difference` compares against the catalog. `index` is the position in the list passed in, and `None` means the whole preview. `fields` holds only what changes and leaves out the timestamp. `after` for a delete is `None`, and `before` for an add is `None`. An empty `drift` with an empty `scales_read` means nobody has looked yet. Do not present that as "no drift".
+
+Warning codes:
+
+| Code | `requires_ack` | Meaning |
+|---|---|---|
+| `price_change_large` | true | New price is more than 50 percent away from the current one |
+| `scale_not_targeted` | true | The preview names fewer than all configured scales |
+| `orphan_replaced` | true | This add replaces what a scale holds at a recorded orphan id |
+| `no_change` | false | The catalog already has these values. Applying still reads each scale and sends the record |
+| `delete_not_available` | false | Deletes are not available yet. Applying reports `not_available` |
+| `scale_not_write_enabled` | false | This scale will report `skipped_not_write_enabled` |
+| `missing_on_scale` | false | With `read_scales`, the scale holds nothing at this id, so the record goes there as a new item |
+| `interrupted_change` | false | An earlier change on these items never finished. Apply will refuse until it is resolved |
+| `scale_read_failed` | false | With `read_scales`, this scale could not be read for the preview |
+
+Error codes: `invalid_change`, `invalid_action`, `item_not_found`, `duplicate_target`, `invalid_price`, `invalid_plu`, `invalid_code`, `code_plu_mismatch`, `plu_edit_held`, `duplicate_plu`, `invalid_id`, `no_free_id`, `invalid_description`, `invalid_field`, `unknown_scale`, `no_changes`, `no_scales`.
+
+`preview_settle_drift` adds the warning `other_scales_may_differ` (no acknowledgement), and the errors `no_drift`, `settle_read_failed`, `settle_not_possible` and `scale_not_write_enabled`.
+
+Validation problems come back in `errors` and do not raise, so you can show them all at once.
+
+### ChangeRecord
+
+The result of an apply, and what `get_change` returns.
+
+```python
+ChangeRecord(
+    change_id: str,
+    preview_id: str,
+    requested_by: str,
+    acknowledged_warnings: bool,
+    started_at: str,
+    finished_at: str | None,
+    outcome: str,
+    success: bool,                 # True only if outcome is "success"
+    changes: tuple[Difference, ...],
+    scale_results: tuple[ScaleResult, ...],   # one per targeted scale, in send order
+    summary: str,                  # display, then every scale's status, and scales not touched
+    verified: bool,                # every targeted scale is verified. True is possible on a subset
+    display: str,                  # one plain line. Interfaces must show it
+    not_touched: tuple[str, ...],  # configured scales this change left out
+    still_differ: tuple[Drift, ...],  # scales that took the change and hold other values than the catalog
+    running: bool,                 # no finish is logged, and something holds the lock now
+)
+ScaleResult(
+    scale: str,
+    status: str,
+    message: str,
+    attempts: int,                 # write sessions opened: 0 or 1. Never more
+    items: tuple[ItemResult, ...],
+    replies: tuple[str, ...],      # write replies in known forms. Anything else shows only its length
+    drift: tuple[Drift, ...],      # what the read before the write found
+    mismatches: tuple[Drift, ...], # what the read back found
+)
+ItemResult(item_id: int | None, plu: str | None, action: str, status: str, message: str)
+```
+
+| `outcome` | Meaning |
+|---|---|
+| `success` | Every record on every configured scale is `verified`, the catalog was updated, and no scale still differs from it |
+| `partial` | At least one record is on at least one scale, and the change is not complete everywhere. Also used when every scale verified it but `still_differ` is not empty: the scales still sell it differently, and `display` names the fields and values |
+| `unknown` | Nothing is known to have landed, but something may have. Check the scale |
+| `failed` | Nothing landed anywhere, and that is known: no record went out, or a read back showed no change |
+| `catalog_out_of_sync` | The scales were contacted, but the catalog or the log could not be fully updated. Read `summary`, and run `compare_scales` |
+| `in_progress` | No finish was logged. If `running` is true it may still be going. If false it stopped for good, and `display` says so. Treat the result as unknown either way |
+| `interrupted` | It never finished, and someone has resolved it with `resolve_interrupted_change` |
+
+A subset of scales never gives `success`, even when each targeted scale is verified. While only some scales are write enabled, the best result is `partial`. That is correct and is not an error.
+
+The catalog changes after an apply as follows. An edit is saved if at least one scale took it. Otherwise the catalog keeps the old values. An add is saved if at least one scale took it, or if a scale is `unknown` or `mismatch`, because the record may be on that scale and must keep its id. So a scale can differ from the catalog after a change, and the next write there reports drift. To bring it in line, make a new preview of an edit with the values you want, and acknowledge the drift it names.
+
+A scale's `message` is written after each record is settled, so it says the same thing as its final `status`.
+
+### ScaleRead
+
+What a scale holds right now, from `read_scale_items`.
+
+```python
+ScaleRead(scale: str, status: str, message: str, items_read: int, read_at: str | None,
+          complete: bool, records: tuple[HeldRecord, ...])
+HeldRecord(item: Item, catalog: Item | None, matches_catalog: bool, difference: Drift | None)
+```
+
+`status` is `read`, `not_contacted` (no flag allows contact), `wrong_scale`, `unreachable` or `read_failed`. Only `read` means anything is known. `complete` means the read reached the end of the table. `item` is what the scale holds, and can hold odd values. `catalog` is the catalog's record for that id, or `None` if it lists none. `difference.kind` is `differs` or `not_in_catalog`.
+
+### ScaleComparison
+
+```python
+ScaleComparison(scale: str, status: str, message: str, items_read: int, read_at: str | None,
+                differences: tuple[Drift, ...])
+```
+
+`status` is `compared`, `not_contacted` (no flag allows contact), `wrong_scale`, `unreachable` or `read_failed`.
+
+## Service (`scaleconnect.service`)
+
+```python
+class ScaleConnectService:
+    def __init__(self, config: Config, catalog: Catalog, *, backup_hook=None,
+                 scale_factory=ScaleClient, clock=None, sleep=time.sleep)
+    # Raises CatalogNotSeeded for a catalog that was never seeded
+
+    @classmethod
+    def open(cls, config_path: str | Path | None = None) -> "ScaleConnectService"
+    # Path order: argument, SCALECONNECT_CONFIG variable, ~/.config/scaleconnect/config.toml
+    # Never creates a catalog. See "Which config can reach a scale".
+
+    def close(self) -> None
+    def capabilities(self) -> Capabilities
+    def list_scales(self) -> list[ScaleInfo]
+    def search_items(self, query: str, limit: int = 50) -> list[Item]
+    def get_item(self, *, plu: str | None = None, id: int | None = None) -> ItemView
+    def preview_changes(self, changes: Sequence[Change | dict], *, requested_by: str = "unknown",
+                        scales: Sequence[str] | None = None, read_scales: bool = False) -> Preview
+    def apply_change(self, preview_id: str, acknowledge_warnings: bool = False, *,
+                     acknowledge_drift: Sequence[str] = (), requested_by: str | None = None) -> ChangeRecord
+    def compare_scales(self, scales: Sequence[str] | None = None) -> list[ScaleComparison]
+    def read_scale_items(self, *, plus: Sequence[str] | None = None, ids: Sequence[int] | None = None,
+                         scales: Sequence[str] | None = None) -> list[ScaleRead]
+    def preview_settle_drift(self, *, scale: str, take: str, plu: str | None = None, id: int | None = None,
+                             requested_by: str = "unknown") -> Preview
+    def get_change(self, change_id: str) -> ChangeRecord
+    def get_change_for_preview(self, preview_id: str) -> ChangeRecord | None
+    def list_changes(self, limit: int = 50) -> list[ChangeRecord]
+    def resolve_interrupted_change(self, change_id: str, note: str, *, requested_by: str = "unknown") -> ChangeRecord
+    def mark_orphans_from_read(self, scale: str, *, ids: Sequence[int] | None = None, note: str = "",
+                               requested_by: str = "unknown") -> OrphanMarks
+    def list_orphans(self) -> dict[int, list[str]]
+    def mark_orphan(self, item_id: int, scale: str, note: str = "") -> None
+    def apply_running(self) -> bool
+```
+
+| Function | Contacts a scale | Raises |
+|---|---|---|
+| `capabilities` | No | Nothing |
+| `list_scales` | No | Nothing |
+| `search_items` | No | Nothing. No match gives `[]` |
+| `get_item` | No | `ItemNotFound`, `ValidationFailed` if not exactly one of plu and id |
+| `preview_changes` | Only with `read_scales=True`: `CX` and `LP` on enabled scales | `ApplyBusy` with `read_scales`. Nothing for bad input, which is in `Preview.errors` |
+| `apply_change` | Yes | See below |
+| `compare_scales` | Yes: `CX` and `LP` on enabled scales. Never writes | `ApplyBusy`. `ValidationFailed` for an unknown name or an empty list |
+| `read_scale_items` | Yes: `CX` and `LP` on enabled scales. Never writes | `ApplyBusy`. `ValidationFailed` for an unknown name, an empty list of scales, or a bad PLU or id type |
+| `preview_settle_drift` | Yes: `CX` and `LP` on that scale. Never writes | `ApplyBusy`. Nothing for bad input, which is in `Preview.errors` |
+| `get_change` | No | `ChangeNotFound` |
+| `get_change_for_preview` | No | `PreviewNotFound`. Returns `None` if not applied yet |
+| `list_changes` | No | Nothing |
+| `resolve_interrupted_change` | No | `ChangeNotFound`. `ApplyBusy` while anything holds the lock |
+| `mark_orphans_from_read` | Yes: `CX` and `LP` on that scale. Never writes | `ApplyBusy`. `ValidationFailed` for an unknown scale or a bad id type |
+| `list_orphans` | No | Nothing |
+| `mark_orphan` | No | `CatalogError` for a bad id |
+| `apply_running` | No | Nothing |
+
+`search_items` puts an exact PLU first, then PLUs that start with the query, then descriptions that hold the query, ignoring case. An empty query lists items up to the limit.
+
+`read_scale_items` returns the records named by `plus` or `ids`, on one `ScaleRead` per scale. Give neither for every record. A PLU can be under any id, so `plus` or neither reads the whole table. `ids` alone stops once the highest id is reached.
+
+### Acknowledgements
+
+| Argument | What it allows |
+|---|---|
+| `acknowledge_warnings=True` | Every preview warning with `requires_ack`: a large price change, a subset of scales, a replaced orphan. Must be exactly `True` |
+| `acknowledge_drift=[token, ...]` | Writing to a scale whose fields differ on the same product, for these exact tokens. Tokens come from `Preview.drift` or `ScaleResult.drift`. It cannot allow a different product or a duplicate PLU |
+
+Previews do not read scales unless asked, so apply always checks. If apply finds drift nobody acknowledged, that scale reports `drift_refused` with the tokens, and nothing is written to it. The preview is then used up. Make a new preview, and pass the tokens to apply.
+
+### Settling drift on one item
+
+Once drift is acknowledged, the catalog and the scale each keep their own value, so the next change shows the drift again. To end it for one item on one scale, a person picks which record wins. Settling is the only way to resolve `different_product`, so `preview_settle_drift` gives a token for that kind too.
+
+| `take` | What happens | Writes to the scale |
+|---|---|---|
+| `"scale"` | The catalog takes the scale's record exactly, including its timestamp | No |
+| `"catalog"` | The scale gets the catalog's record through the normal seven steps, and is read back | Yes |
+
+```python
+preview = svc.preview_settle_drift(scale="SCALE1", take="scale", plu="4001", requested_by="web:staff")
+if preview.ok:
+    # Show preview.drift[0].message and preview.differences[0], then:
+    record = svc.apply_change(
+        preview.preview_id,
+        acknowledge_warnings=True,            # if any warning has requires_ack
+        acknowledge_drift=[preview.drift[0].ack_token],
+        requested_by="web:staff",
+    )
+```
+
+- The preview reads the scale now, so it takes as long as a read. Apply reads it again.
+- `Difference.action` is `settle_accept` or `settle_push`. `fields` shows what will change: `before` and `after` are catalog then scale for `settle_accept`, and scale then catalog for `settle_push`. Both include the timestamp.
+- It logs like any other change, and `get_change` returns it. A `settle_accept` that goes through shows the scale as `verified`, because it was read just then.
+- If the scale's record changed after the preview, the scale reports `drift_refused` and nothing changes.
+- `take="catalog"` sends the catalog's own timestamp, not a new one. A new one would make this scale differ from the catalog and every other scale by the timestamp alone.
+- `take="catalog"` needs writes on. `take="scale"` needs only a flag that allows contact, and takes no backup, because nothing is written to the scale.
+- `take="scale"` moves the catalog, so other scales that matched the old record may then show drift. The preview warns of this.
+
+It refuses with `no_drift` if they already match, and `settle_read_failed` if the scale cannot be read. `take="scale"` refuses a record that breaks the validation rules, a PLU another catalog item holds, or an id where the scale holds nothing (`settle_not_possible`). `take="catalog"` reads the whole table, and refuses with `duplicate_plu` if the scale holds that PLU under another id. It refuses with `plu_edit_held` if it would change the PLU or Code on the scale, unless the scale's record at that id is a recorded orphan, which it then replaces, with the `orphan_replaced` warning. Where the scale holds nothing at the id, the token is not needed. Settling covers items the catalog lists. For an id only the scale holds, see "When an add has nowhere to land".
+
+### When an add has nowhere to land
+
+A real table can be full: every id holds something, some of it old test items the catalog does not list. An add to such an id reports `id_occupied`. To go on:
+
+```python
+marks = svc.mark_orphans_from_read("SCALE1", note="old test items", requested_by="web:staff")
+# OrphanMarks(scale, status, message, marked: tuple[int, ...], not_marked: tuple[int, ...], held: tuple[Item, ...])
+preview = svc.preview_changes(
+    [{"action": "add", "plu": "4001", "description": "Example", "price": "3.00", "replace_orphan_id": marks.marked[0]}]
+)
+svc.apply_change(preview.preview_id, acknowledge_warnings=True)   # after a person saw orphan_replaced
+```
+
+`mark_orphans_from_read` reads one scale and records each id it holds that the catalog does not list, for that scale only. Run it for each scale that holds one. Show `held` first, because replacing an orphan removes that record's PLU from the scale. It writes nothing to the scale, and it is logged. `status` is `read`, `not_contacted`, `wrong_scale`, `unreachable` or `read_failed`, and only `read` marks anything. Give `ids` to mark only those. Any of them it cannot mark, because the scale holds nothing there or the catalog lists it, comes back in `not_marked`.
+
+An add never takes an orphan id unless it names one in `replace_orphan_id`. If no free id is left, the preview error `no_free_id` says so. After the add, a note is cleared only for each scale that took the record. A scale that did not still shows `different_product`, and `preview_settle_drift(take="catalog")` brings it in line.
+
+### What apply does
+
+`apply_change` raises, with nothing sent, for `PreviewNotFound`, `PreviewExpired`, `PreviewStale`, `PreviewAlreadyApplied`, `AcknowledgementRequired`, `ValidationFailed`, `InterruptedChange`, `BackupFailed`, `LogFailed` and `ApplyBusy`. After it starts sending it does not raise for scale or log problems. They appear in the record, and it continues to the next scale.
+
+1. Takes the lock. Checks the preview exists, has not been used, has not expired, the catalog has not changed, the write flags are the same as at preview, warnings are acknowledged, every record is still valid, every add's id is still free, and no interrupted change touches these items.
+2. Saves the item list backup before the first write to each scale.
+3. Marks the preview used, and logs that the change started.
+4. For each targeted scale, one at a time, in config order. It logs each result as it comes, and a failure moves on to the next scale:
+   1. **Identity.** Sends `CX`. A wrong serial sends nothing else.
+   2. **Read.** Sends `LP`, stopping once it has the highest id it needs. An add, or the first write to a scale, reads the whole table.
+   3. **Compare.** A different product, a duplicate PLU, an occupied id, or field drift nobody acknowledged refuses this whole scale.
+   4. **Build.** The scale's own record with only the requested fields, plus one new timestamp. A record that fails validation is refused here.
+   5. **Write.** `RI`, `bX01XX`, `GP` batches, `GPF0`. Each waits for the last reply, and each batch's reply is checked.
+   6. **Read back.** Waits out the scale's busy gap of about 10 to 11 seconds. Compares all 20 fields as exact text.
+   7. **No resend.** Nothing goes out twice on its own.
+5. Updates the catalog, and logs the finish.
+
+How retries work: a connect that fails, at once or by timing out, is tried again up to `connect_attempts` times, and the wait doubles from `connect_retry_wait_seconds` up to 30 seconds. So is `CX` or the start of a read that gets dropped with no reply, which is another way a busy scale says no. With the defaults that is at least 65 seconds of real time, even if each refusal comes back at once. The read back keeps trying for `read_back_window_seconds`, 45 by default, also in real time. `load_config` warns if either covers under 15 seconds. Nothing is retried once a scale has stalled on an opening message or has answered.
+
+Turning a flag off in the config file takes effect at once, even in a running server. It is checked at each scale, and again right before writing. Turning a flag on needs a restart.
+
+A preview lasts `preview_ttl_seconds`, 900 by default. Any change to the catalog's items makes all open previews stale.
+
+### Interrupted changes
+
+If the process dies mid change, the log holds a start with no finish. Apply then refuses to touch those items, and raises `InterruptedChange`. `list_scales` and `get_item` show the change id, and a preview warns. To clear it, run `compare_scales` to see what the scales hold, then call `resolve_interrupted_change`.
+
+The lock tells a running change from a dead one, in any process. While anything holds it, `apply_running()` is true, `interrupted_change_ids` stays empty, a change with no finish has `running` true, and `resolve_interrupted_change` raises `ApplyBusy`. Once it is free, a change with no finish has stopped for good, so show its `display`, and do not say it is working.
+
+### Which config can reach a scale
+
+`open` keeps a scale enabled only if the config is the local file at `~/.config/scaleconnect/config.toml`, or the scale's address is this PC. So a temp file passed with `--config` or `SCALECONNECT_CONFIG` cannot turn on a real scale. Any config with a write enabled scale must say how rule 5 is met: set `scalelink_db_path`, or `scalelink_db_copy = "not_available_here"`. The real config fails at `open` without it. Any other config gets `BackupFailed` at the first write, unless a custom `backup_hook` is passed.
+
+The lock covers one `state_dir` on one PC. It does not reach another PC or ScaleLink. Run one writer for the scales: the app on bartcc. Do not write from the command line on another PC at the same time.
+
+### How long things take
+
+These are estimates from the lab, not measurements on a whole change. The default pace is 0.2 seconds between read messages, and reply speed is untested on a real scale.
+
+| Step | Time |
+|---|---|
+| A whole table read | About 30 seconds at the default pace |
+| An edit | A partial read, about 3 seconds per 100 ids, then the write |
+| An add, or the first write to a scale | A whole table read, then the write |
+| The read back | The busy gap of 10 to 11 seconds, then a read up to the id |
+| One unreachable scale | About 2 minutes, with the default retries |
+
+So one edit on three scales can take over a minute, and an add over 2 minutes. Reads and writes hold the lock.
+
+## Validation
+
+Done by the service on every add and edit result. It also runs on the record built from a scale's own values, and a failure there gives `drift_refused`.
+
+| Check | Rule | Error code |
+|---|---|---|
+| Price | Text or Decimal, never a float. More than 0, at most 999.99, exactly two decimals, no stray leading zeros | `invalid_price` |
+| PLU | Exactly 4 ASCII digits, not starting with 0 | `invalid_plu` |
+| Code | Exactly 4 ASCII digits, not starting with 0, and equal to the PLU | `invalid_code`, `code_plu_mismatch` |
+| PLU or Code change | On hold | `plu_edit_held` |
+| Duplicate | A new PLU must be free in the catalog. Each scale is checked at apply too | `duplicate_plu`, or `plu_on_other_id` drift |
+| Id | 1 to 500 | `invalid_id` |
+| Description | Not empty or blank. Printable ASCII only, so no TAB, CR or LF. At most `description_max_length`, 35 by default. A new value cannot start or end with a space | `invalid_description` |
+| Sold by | `weight` or `piece` | `invalid_field` |
+| Other fields | Printable ASCII, at most 20 characters each. Callers cannot set them | `invalid_field` |
+| Same item twice | One preview may not target an item twice | `duplicate_target` |
+
+A PLU with a leading zero is refused because none of the 484 real items has one (they run from 1001 to 7262), and nobody knows what a scale does with one. An existing catalog item whose Code differs from its PLU cannot be edited until the hold is lifted.
+
+## Exceptions (`scaleconnect.errors`)
+
+All derive from `ScaleConnectError`. Each has `.code` (stable text), `.message` (plain words for a person) and `.to_dict()`, which gives `{"code": ..., "message": ...}`.
+
+| Class | `code` | CLI exit |
+|---|---|---|
+| `ConfigError` | `config_error` | 8 |
+| `CatalogNotSeeded` | `catalog_not_seeded` | 8 |
+| `ValidationFailed` (has `.errors`, a list of `PreviewError`) | `validation_failed` | 3 |
+| `ItemNotFound` | `item_not_found` | 4 |
+| `ChangeNotFound` | `change_not_found` | 4 |
+| `PreviewNotFound` | `preview_not_found` | 4 |
+| `PreviewExpired` | `preview_expired` | 5 |
+| `PreviewStale` | `preview_stale` | 5 |
+| `PreviewAlreadyApplied` | `preview_already_applied` | 5 |
+| `InterruptedChange` | `interrupted_change` | 5 |
+| `AcknowledgementRequired` | `acknowledgement_required` | 6 |
+| `BackupFailed` | `backup_failed` | 9 |
+| `ApplyBusy` | `apply_busy` | 10 |
+| `LogFailed` | `log_failed` | 1 |
+| `NotWriteEnabled`, `NotReadEnabled` (raised only by `scale.py`, the service turns them into a status) | `not_write_enabled`, `not_read_enabled` | 1 |
+| `OperationNotAvailable` | `not_available` | 1 |
+| `ProtocolError` (a record or message that cannot be built safely) | `protocol_error` | 1 |
+
+## Config (`scaleconnect.config`)
+
+```python
+load_config(path: str | Path | None = None) -> Config
+Config(
+    scales: tuple[ScaleConfig, ...],   # in file order, which is send order
+    settings: Settings,
+    pin: str | None,                   # for app-dev. None if unset or the example value. Never log it
+    mcp_token: str | None,             # for mcp-dev. Same. Never log it
+    mcp_caller: str | None,            # the name of whoever holds the MCP token, for the log. Optional
+    web: ListenConfig,                 # .host, .port
+    mcp: ListenConfig,
+    path: Path | None,
+    warnings: tuple[str, ...],         # show these at startup
+)
+ScaleConfig(name: str, address: str, port: int = 50036, write_enabled: bool = False,
+            serial: str | None = None, read_enabled: bool = False)
+catalog_path_for(config_path=None) -> Path   # the one catalog path rule. The service and seed share it
+```
+
+An enabled scale must have a serial in the file, and two entries may not share an address and port, or a serial.
+
+On Linux, `load_config` refuses a file that group or other can use in any way. Run `chmod 600` on it. Windows has no such modes, so this check is skipped there.
+
+`[web]` and `[mcp]` `host` must be one real IPv4 address. `0`, `::0`, `0.0.0.0`, names such as `localhost`, and wildcards raise `ConfigError`. `config.listen_problem(host)` gives the reason, or `None`. An address in Tailscale's `100.64.0.0/10` loads with a warning in `Config.warnings`.
+ `repr(Config)` hides the PIN and token. See `config.example.toml` for every setting. `unknown_retries` and `unknown_retry_wait_seconds` are gone, because a record is never resent automatically. A config that still has them loads, with a warning.
+
+A scale with neither `write_enabled` nor `read_enabled` is never contacted. `write_enabled` alone allows reads too, because a write needs them.
+
+## Catalog (`scaleconnect.catalog`)
+
+The service uses it. Interfaces make no changes through it. It uses `Item`, keeps everything in SQLite, is safe to use from several threads and processes, and never contacts a scale.
+
+```python
+class Catalog:
+    def __init__(self, path: str | Path)      # creates the file and tables if missing. Only seed code should
+    @classmethod
+    def open_existing(cls, path) -> "Catalog" # raises CatalogNotSeeded if there is no file
+    def close(self) -> None
+    def is_seeded(self) -> bool
+    def mark_seeded(self, source: str = "") -> None   # import_items does this itself
+    def epoch(self) -> str                    # differs for each catalog file
+
+    # Items
+    def version(self) -> str                  # changes whenever any item changes, and only then
+    def list_items(self, *, include_deleted=False) -> list[Item]    # by id
+    def get_by_id(self, item_id: int, *, include_deleted=False) -> Item | None
+    def get_by_plu(self, plu: str) -> Item | None
+    def search(self, query: str, limit: int = 50) -> list[Item]
+    def free_ids(self, count: int, max_id: int = 500) -> list[int]
+    # Lowest unused ids, ascending, skipping live, reserved and orphan ids. May return fewer than count.
+    def upsert_item(self, item: Item, *, replacing_orphan: bool = False) -> None
+    def remove_item(self, item_id: int) -> None
+    def import_items(self, items: Iterable[Item]) -> int            # seeding an empty catalog only
+
+    # Ids known or suspected to hold an item on a scale that the catalog does not list
+    def mark_orphan_id(self, item_id: int, scale: str, note: str = "") -> None
+    def clear_orphan_id(self, item_id: int, scale: str) -> bool
+    def orphan_ids(self) -> dict[int, list[str]]   # id to scale names
+
+    # What we last recorded and read for an item on each scale
+    def record_scale_state(self, item_id: int, scale: str, status: str, change_id: str, at: str, *,
+                           belief: str | None = None, record: Item | None = None) -> None
+    def scale_states(self, item_id: int) -> dict[str, dict]
+    # scale name to {"status", "change_id", "at", "belief", "record"}
+    def record_scale_reads(self, scale: str, items: Iterable[Item], at: str, *, covered_up_to: int | None = None) -> None
+    # An id at or below covered_up_to that is not in items is recorded as holding nothing
+    def last_reads(self, item_id: int) -> dict[str, dict]   # scale name to {"record": Item or None, "at"}
+
+    # Previews. Payload is a JSON safe dict the catalog does not interpret
+    def save_preview(self, preview_id: str, payload: dict, created_at: str, expires_at: str) -> None
+    def load_preview(self, preview_id: str) -> dict | None
+    # {"preview_id", "payload", "created_at", "expires_at", "consumed_by"}. None if missing
+    def consume_preview(self, preview_id: str, change_id: str) -> bool
+    # Atomic. True the first time only. False if already consumed or missing
+
+    # Change log. Append only. No update or delete, ever
+    def append_log(self, change_id: str, event: str, payload: dict, at: str) -> None
+    def read_log(self, change_id: str) -> list[dict]
+    # Oldest first. Each is {"change_id", "event", "payload", "at"}
+    def list_change_ids(self, limit: int = 50) -> list[str]   # newest first
+    def open_change_ids(self) -> list[str]    # started, with no finish
+    def last_scale_event(self, scale: str) -> dict | None
+    # Payload of the newest "scale_result" row for that scale, plus "change_id" and "at". None if there is none
+```
+
+Events the service writes: `started`, `scale_result`, `finished` and `backup_failed`. `scale_result` holds a `ScaleResult.to_dict()`. `started` holds who asked, the acknowledgements, the config path and the backup notes. A `change_id` is a uuid in hex. `backup_failed` has its own `change_id`, and that record shows `outcome` `failed` with no `scale_results`. Read blocks never go in the log. Only the record read for an id goes in `scale_read`, or in a `Drift` for that id.
+
+### Seeding
+
+`python -m scaleconnect.seed SEED.json [--config PATH] [--db PATH] [--overwrite] [--believed-on NAME]`. Without `--db` the file goes where the config says, by the same rule the service uses. The service refuses any catalog not made this way. `--believed-on` records what a scale should hold after a full send. Its belief stays `unknown` until a read shows it, and no write relies on it. `--overwrite` takes the same lock as a change, so it raises `ApplyBusy` while one runs. If it fails, the old catalog and its side files go back. Stop the web page and MCP server before an `--overwrite`. On Linux a running one keeps using the old file on threads it already has.
+
+### Backups
+
+`backup_hook(scale: str, items: list[Item], backup_dir: Path) -> Path` runs once for each write enabled scale, before anything is sent. A delete counts as a write here. The default hook writes the item list as JSON, and copies the ScaleLink database too if `scalelink_db_path` is set. If a hook fails, `apply_change` raises `BackupFailed`, and the preview can still be used.
+
+The first write to a scale also saves everything `LP` returns to a dump file in `backup_dir`. If that fails, the scale reports `read_failed`, and nothing is written to it. `LG`, `LH` and `LT` are not saved. Markers in `backup_dir` record that both ran. A marker counts only if it is the current version, is for this catalog file, and what it names still exists. The log says which ScaleLink copy happened: `scalelink_db_copied`, `not_available_here` or `custom_hook`.
+
+## Command line (`scaleconnect.cli`)
+
+`python -m scaleconnect.cli [--config PATH] COMMAND`. Installed as `scaleconnect`. Output on stdout is always one JSON document.
+
+```
+scaleconnect capabilities
+scaleconnect scales
+scaleconnect search QUERY [--limit N]
+scaleconnect get (--plu PLU | --id ID)
+scaleconnect preview (--json TEXT | --file PATH | --stdin) [--scale NAME ...] [--read] [--who NAME]
+scaleconnect apply PREVIEW_ID [--acknowledge-warnings] [--acknowledge-drift TOKEN ...] [--who NAME]
+scaleconnect compare [--scale NAME ...]
+scaleconnect read [--plu PLU ...] [--id ID ...] [--scale NAME ...]
+scaleconnect settle (--plu PLU | --id ID) --scale NAME --take (scale | catalog) [--who NAME]
+scaleconnect change CHANGE_ID
+scaleconnect changes [--limit N]
+scaleconnect mark-orphans --scale NAME [--id ID ...] [--note TEXT] [--who NAME]
+scaleconnect orphans
+scaleconnect resolve CHANGE_ID --note TEXT [--who NAME]
+```
+
+`settle` prints a `Preview`. Apply it with `apply`, as with any other. `preview` takes a JSON list of changes. On failure the output is `{"ok": false, "error": {"code": ..., "message": ...}}`. `preview` with errors prints the `Preview` and exits 3. `apply` prints the `ChangeRecord`.
+
+| Exit | Meaning |
+|---|---|
+| 0 | Done. For `apply`, the outcome is `success`. For `compare`, every contacted scale matches. For `read`, every contacted scale was read |
+| 1 | Unexpected error |
+| 2 | Bad command line |
+| 3 | Validation failed, including a preview or `settle` with errors, or an unknown scale name |
+| 4 | Not found |
+| 5 | Preview expired, stale or already applied, or an interrupted change is in the way |
+| 6 | Warnings must be acknowledged |
+| 7 | `apply` ran, but the outcome is not `success`. Or `compare` found differences or could not read, or `read` could not read a scale. Read the output |
+| 8 | Config problem, or no seeded catalog |
+| 9 | Backup failed. Nothing sent |
+| 10 | Another apply is running. Nothing sent |

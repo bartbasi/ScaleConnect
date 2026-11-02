@@ -1,0 +1,66 @@
+# ScaleConnect example config. Copy to ~/.config/scaleconnect/config.toml and edit there.
+# The real file holds addresses and secrets, so it never goes in the repo.
+# On Linux it must be private, or nothing will load it: chmod 600 ~/.config/scaleconnect/config.toml
+# The addresses below are documentation addresses and reach nothing.
+
+[settings]
+reply_timeout_seconds = 15        # how long to wait for each reply
+connect_timeout_seconds = 10
+connect_attempts = 5              # tries before a scale counts as unreachable
+connect_retry_wait_seconds = 5
+batch_size = 5                    # records in each GP batch. 5 is the most allowed
+read_pace_seconds = 0.2           # pause between messages in a read
+read_back_window_seconds = 45     # how long to keep trying to read back after a write
+read_back_retry_seconds = 2
+description_max_length = 35
+preview_ttl_seconds = 900
+
+# Previews and the apply lock go in state_dir. Keep all of these outside the repo.
+# state_dir = "~/.config/scaleconnect"
+# catalog_path = "~/.config/scaleconnect/catalog.sqlite3"
+# backup_dir = "~/.config/scaleconnect/backups"
+# Rule 5 needs a copy of the ScaleLink database with the first write backup. Set one of these,
+# or the first write refuses to run. Use the second only on a PC that does not have that file.
+# scalelink_db_path = "/path/to/scalelink/database"
+# scalelink_db_copy = "not_available_here"
+
+[auth]
+pin = "change-me"
+mcp_token = "change-me"
+# The name of whoever holds the MCP token, for the change log. Optional.
+# mcp_caller = "invoice-desk"
+
+# host must be one real IPv4 address of this PC. Names and wildcards are refused.
+[web]
+host = "127.0.0.1"
+port = 8080
+
+[mcp]
+host = "127.0.0.1"
+port = 8765
+
+# Scales are sent to one at a time, in the order listed here.
+# A scale without write_enabled = true never gets a write.
+# A scale with neither write_enabled nor read_enabled is never contacted, not even to read.
+# An enabled scale needs its serial here. The library checks it on the scale before anything else.
+# Each entry needs its own address.
+
+[[scales]]
+name = "SCALE1"
+address = "192.0.2.10"
+port = 50036
+serial = "EXAMPLE-000001"
+write_enabled = false
+read_enabled = false
+
+[[scales]]
+name = "SCALE2"
+address = "192.0.2.11"
+serial = "EXAMPLE-000002"
+write_enabled = false
+
+[[scales]]
+name = "SCALE3"
+address = "192.0.2.12"
+serial = "EXAMPLE-000003"
+write_enabled = false

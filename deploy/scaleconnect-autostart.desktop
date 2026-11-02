@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Scale Prices (start the page)
+Comment=Starts the scale price page when the desktop starts, so phones can reach it. It does not open a window.
+Exec=sh -c 'sh "$HOME/CCScaleApp/ScaleConnect/deploy/scaleconnect-web.sh" start --no-open'
+Icon=applications-internet
+Terminal=false
+Hidden=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

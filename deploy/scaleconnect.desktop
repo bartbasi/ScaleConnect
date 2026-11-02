@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Scale Prices
+GenericName=Scale price changes
+Comment=Start the scale price page if needed, and open it
+Exec=sh -c 'sh "$HOME/CCScaleApp/ScaleConnect/deploy/scaleconnect-web.sh" start'
+Icon=applications-internet
+Terminal=false
+Categories=Office;Utility;
+StartupNotify=false

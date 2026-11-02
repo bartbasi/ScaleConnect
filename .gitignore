@@ -1,0 +1,67 @@
+# Private research and scale data. These stay out of the repo (hard rule 7).
+research/
+backups/
+captures/
+*.pcap
+*.pcapng
+*.cap
+
+# Tor-rey installers and programs
+*.exe
+*.msi
+*.dll
+*.apk
+*.zip
+*.7z
+
+# ScaleLink database and files (hard rule 8)
+*.mdb
+*.accdb
+*.ldb
+*.laccdb
+
+# Item lists, seed files and lab files. These hold real product data.
+*seed*.json
+catalog-seed*
+seed/
+lab/
+lab-notebook*
+*.jsonl
+dumps/
+front-dump*/
+
+# Local SQLite files: the item list, change log and state
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Local config holds addresses, serials, the PIN and the MCP token (hard rule 10).
+# Only config.example.toml is committed.
+config.toml
+*.local.toml
+.env
+.env.*
+.mcp.json
+scaleconnect.lock
+*.lock
+*.pid
+*.log
+
+# Virtual environment
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# Claude Code files live one folder up, outside the repo
+CLAUDE.md
+.claude/
