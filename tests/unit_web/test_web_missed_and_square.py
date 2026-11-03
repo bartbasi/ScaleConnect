@@ -270,7 +270,7 @@ def test_a_scale_read_since_that_shows_a_difference_says_it_differed(make_web):
 
 def test_the_item_page_does_not_say_matches_from_a_read_older_than_the_miss(make_web):
     """A reload that could not be read back moves nothing in the catalog, so the read before it still matches. It says nothing about what happened since."""
-    web = make_web({"A": True}, clock=ticking_clock())
+    web = make_web({"A": True}, clock=ticking_clock(), read_back_window_seconds=1.0)
     web.env.svc.compare_scales(["A"])
     assert item_row(web, "A")["flag"] == "same", "the read matches, and the page says so"
     web.env.fakes["A"].raw_reply(JUNK, kind="LP", times=None)
@@ -278,7 +278,14 @@ def test_the_item_page_does_not_say_matches_from_a_read_older_than_the_miss(make
     web.env.fakes["A"].clear_faults()
     row = item_row(web, "A")
     assert row["last_read"] is not None and row["differs"] == [], "the read itself does match"
-    # Round 6 N3: a reload that got no read back carries the freeze flag, so the row says that, and offers nothing.
+    # Round 7 L2: a bad answer on a scale that then closed is a plain failure, not a freeze. The row still does not say it matches.
+    assert row["flag"] == "unsure" and "Matches" not in row["text"]
+    assert "Did not answer. Tell Bart." not in row["text"]
+    # Round 6 N3: a reload whose read back got no reply carries the freeze flag, so the row says that, and offers nothing.
+    web.env.fakes["A"].stall_read(times=None)
+    web.env.svc.reload_scale("A", accept_differences=True, requested_by="test")
+    web.env.fakes["A"].clear_faults()
+    row = item_row(web, "A")
     assert row["flag"] == "frozen" and "Matches" not in row["text"]
     assert "Did not answer. Tell Bart." in row["text"] and row["can_fix"] is False
 

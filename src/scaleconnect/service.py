@@ -12,13 +12,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
 import time
 import uuid
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -54,6 +55,7 @@ from .errors import (
     ReloadDifferences,
     ProtocolError,
     ScaleConnectError,
+    ScaleMayBeFrozen,
     ValidationFailed,
 )
 from .models import (
@@ -138,10 +140,23 @@ EVENT_SCALE_RESULT = "scale_result"
 EVENT_FINISHED = "finished"
 EVENT_BACKUP_FAILED = "backup_failed"
 _CHANGE_EVENTS = (EVENT_STARTED, EVENT_BACKUP_FAILED)
+log = logging.getLogger("scaleconnect.service")
 
 
 def _printable(value: str) -> bool:
     return all(0x20 <= ord(ch) <= 0x7E for ch in value)
+
+
+def _parsed_time(text: Any) -> datetime | None:
+    try:
+        return datetime.fromisoformat(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _frozen_skip_words(name: str) -> str:
+    """Starts with the scale's name, which is how a reader picks the scale out. Library words, no record text."""
+    return f"{name}: it gave no reply earlier, and nothing has read it since, so it was not read now. Nothing was sent to it."
 
 
 def _note_repeat(read: Any, name: str, repeats: set[str] | None) -> None:
@@ -563,14 +578,30 @@ class ScaleConnectService:
         requested_by: str = "unknown",
         scales: Sequence[str] | None = None,
         read_scales: bool = False,
+        avoid_frozen: bool = False,
     ) -> Preview:
         """Checks changes and changes nothing. Bad input comes back in errors. It does not raise.
 
         It contacts no scale unless read_scales is True. Apply repeats the check either way.
+
+        avoid_frozen leaves out every scale that may be frozen, as the web page asks. Each one left out
+        gets a scale_left_out warning, is named in left_out, and stays on the unfinished list as missing
+        this change once it is applied. If no scale with writes on is left, it refuses with scale_may_be_frozen.
         """
         now = self._clock()
         created_at = now.isoformat(timespec="seconds")
         targets, errors = self._target_scales(scales)
+        left_out: list[str] = []
+        if avoid_frozen and not errors:
+            frozen = set(self.scales_may_be_frozen())
+            left_out = [s.name for s in targets if s.name in frozen and (s.write_enabled is True or s.read_enabled is True)]
+            targets = tuple(s for s in targets if s.name not in left_out)
+            if left_out and not any(s.write_enabled is True for s in targets):
+                errors.append(PreviewError(
+                    "scale_may_be_frozen",
+                    f"{', '.join(left_out)} gave no reply earlier, and no other scale with writes on is left, so nothing was read or sent.",
+                    None, "scales",
+                ))
         restart = self.config_changed()
         if restart:
             errors.append(PreviewError("config_changed", restart, None, None))
@@ -616,7 +647,16 @@ class ScaleConnectService:
 
         if not errors:
             configured = {s.name for s in self._config.scales}
-            untouched = sorted(configured - {s.name for s in targets})
+            untouched = sorted(configured - {s.name for s in targets} - set(left_out))
+            if left_out:
+                warnings.append(
+                    PreviewWarning(
+                        "scale_left_out",
+                        f"{', '.join(left_out)} gave no reply earlier, so this change leaves it out. Nothing is read or sent there. "
+                        "Unless its writes are off, it stays on the unfinished list as missing this change until a person has checked it.",
+                        True,
+                    )
+                )
             if untouched:
                 warnings.append(
                     PreviewWarning(
@@ -643,7 +683,7 @@ class ScaleConnectService:
                         )
                     )
             if read_scales:
-                drift, scales_read, fills = self._read_for_preview(targets, plans, warnings, repeats)
+                drift, scales_read, fills = self._read_for_preview(targets, plans, warnings, repeats, avoid_frozen=avoid_frozen)
 
         scale_names = tuple(s.name for s in targets)
         if errors:
@@ -657,6 +697,7 @@ class ScaleConnectService:
                 differences=tuple(differences),
                 warnings=tuple(warnings),
                 errors=tuple(errors),
+                left_out=tuple(left_out),
             )
 
         preview_id = uuid.uuid4().hex
@@ -671,6 +712,9 @@ class ScaleConnectService:
             "plans": [p.to_dict() for p in plans],
             "warnings": [w.to_dict() for w in warnings],
             "fills": fills,
+            "left_out": list(left_out),
+            # A scale left out with writes off would not have been written anyway, so it is not a miss.
+            "left_out_writes": {s.name: s.write_enabled is True for s in self._current_scales() if s.name in left_out},
         }
         self._catalog.save_preview(preview_id, payload, created_at, expires_at)
         return Preview(
@@ -686,6 +730,7 @@ class ScaleConnectService:
             drift=tuple(drift),
             scales_read=tuple(scales_read),
             scales_read_repeated=tuple(name for name in scale_names if name in repeats),
+            left_out=tuple(left_out),
         )
 
     def _deleted_held(self) -> list[dict]:
@@ -959,7 +1004,13 @@ class ScaleConnectService:
         return None
 
     def _read_for_preview(
-        self, targets: Sequence[ScaleConfig], plans: Sequence[_Plan], warnings: list[PreviewWarning], repeats: set[str] | None = None
+        self,
+        targets: Sequence[ScaleConfig],
+        plans: Sequence[_Plan],
+        warnings: list[PreviewWarning],
+        repeats: set[str] | None = None,
+        *,
+        avoid_frozen: bool = False,
     ) -> tuple[list[Drift], list[str], dict[str, list[int]]]:
         drift: list[Drift] = []
         read_names: list[str] = []
@@ -968,11 +1019,16 @@ class ScaleConnectService:
         if not writes:
             return drift, read_names, fills
         with _apply_lock(self._lock_path):
+            # Under the lock, so a freeze another process logged a moment ago is seen.
+            frozen = set(self.scales_may_be_frozen()) if avoid_frozen else set()
             for scale in targets:
                 if scale.write_enabled is not True and scale.read_enabled is not True:
                     continue
+                if scale.name in frozen:
+                    warnings.append(PreviewWarning("scale_may_be_frozen", _frozen_skip_words(scale.name), may_be_frozen=True))
+                    continue
                 client = self._scale_factory(scale, self._settings, sleep=self._sleep)
-                outcome = self._identify_and_read(scale, client, writes, repeats)
+                outcome = self._identify_and_read(scale, client, writes, repeats, what="preview")
                 if isinstance(outcome, ScaleResult):
                     warnings.append(PreviewWarning("scale_read_failed", outcome.message, may_be_frozen=outcome.may_be_frozen))
                     continue
@@ -1119,24 +1175,26 @@ class ScaleConnectService:
                 found.append(Drift(name, "delete_may_have_landed", difference.item_id, difference.plu, {}, record, words, _drift_token(name, difference.item_id, record)))
         return found
 
-    def _identify_and_read(self, scale: ScaleConfig, client: Any, writes: Sequence[_Plan], repeats: set[str] | None = None) -> Any:
+    def _identify_and_read(self, scale: ScaleConfig, client: Any, writes: Sequence[_Plan], repeats: set[str] | None = None, what: str = "apply") -> Any:
         """Steps 1 and 2. Returns what the scale holds, by id, or a ScaleResult saying why not.
 
         It reads the whole table once, because any write must find its PLU under any other id, and
         must know where the table ends. The table comes back with placeholders in it. Use
-        _real_records to judge what is on it.
+        _real_records to judge what is on it. A read that ends may_be_frozen is noted, see _note_no_reply.
         """
         name = scale.name
         differences = [p.difference for p in writes]
         identity = client.identify()
         if not identity.ok:
             result = self._uniform_result(name, identity.status, identity.message, differences)
+            self._note_no_reply(name, what, identity)
             return replace(result, may_be_frozen=identity.may_be_frozen)
         read = client.read_items(None)
         _note_repeat(read, name, repeats)
         if not read.ok:
             status = read.status or ScaleStatus.READ_FAILED
             message = f"{read.message} Nothing was written to this scale."
+            self._note_no_reply(name, what, read)
             return replace(self._uniform_result(name, status, message, differences), may_be_frozen=read.may_be_frozen)
         self._save_reads(name, read)
         return read.items
@@ -1147,6 +1205,11 @@ class ScaleConnectService:
         A whole read vouches for the ids past its end only if it reached every id the scale should
         hold. Otherwise it vouches only for what it went past, so it frees no deleted id above that.
         """
+        try:
+            # The scale answered, even if the table is empty and nothing below is kept. That ends a freeze flag.
+            self._catalog.note_read_answered(name, self._now_text())
+        except Exception:
+            pass
         try:
             last = max(read.items, default=0)
             trusted = read.complete and not self._read_ended_early(name, read.items)
@@ -1313,12 +1376,17 @@ class ScaleConnectService:
         *,
         acknowledge_drift: Sequence[str] = (),
         requested_by: str | None = None,
+        avoid_frozen: bool = False,
     ) -> ChangeRecord:
+        """avoid_frozen refuses with ScaleMayBeFrozen, under the apply lock and before anything is sent,
+        if any scale this preview names may be frozen. The web page asks for it."""
         with _apply_lock(self._lock_path):
             tokens = frozenset(t for t in acknowledge_drift if isinstance(t, str))
-            return self._apply_locked(preview_id, acknowledge_warnings is True, tokens, requested_by)
+            return self._apply_locked(preview_id, acknowledge_warnings is True, tokens, requested_by, avoid_frozen is True)
 
-    def _apply_locked(self, preview_id: str, acknowledged: bool, tokens: frozenset[str], requested_by: str | None) -> ChangeRecord:
+    def _apply_locked(
+        self, preview_id: str, acknowledged: bool, tokens: frozenset[str], requested_by: str | None, avoid_frozen: bool = False
+    ) -> ChangeRecord:
         restart = self.config_changed()
         if restart:
             raise ConfigChanged(restart)
@@ -1358,10 +1426,21 @@ class ScaleConnectService:
                 raise InterruptedChange(
                     f"Change {change_id} touched these items and never finished. Run compare_scales, then resolve it."
                 )
+        if avoid_frozen:
+            # Under the lock, so a freeze another process logged since the preview is seen before anything goes out.
+            frozen_now = [n for n in self.scales_may_be_frozen() if n in names]
+            if frozen_now:
+                raise ScaleMayBeFrozen(
+                    f"{', '.join(frozen_now)} gave no reply after this preview was made, so nothing was read or sent. Make a new preview.",
+                    frozen_now,
+                )
 
         targets = [by_name[n] for n in self._config_order(names)]
         actor = (requested_by or payload.get("requested_by") or "unknown").strip() or "unknown"
         writes = [p for p in plans if p.difference.action in _WRITE_ACTIONS]
+        # Scales the preview left out because they may be frozen. Nothing goes to them. Each gets a result
+        # that says so, which leaves it on the unfinished list as missing this change.
+        left_out = [n for n in self._config_order(payload.get("left_out") or []) if n not in names]
 
         backup_notes = self._backup_first_writes(targets, writes, preview_id, actor)
 
@@ -1370,7 +1449,7 @@ class ScaleConnectService:
         # One timestamp per apply, so every scale gets the same time.
         stamp = self._clock().strftime("%Y-%m-%d %H:%M:%S")
         stamped = [self._stamped(p, stamp) for p in plans]
-        not_touched = tuple(s.name for s in self._config.scales if s.name not in names)
+        not_touched = tuple(s.name for s in self._config.scales if s.name not in names and s.name not in left_out)
         started_at = self._now_text()
         try:
             # One transaction, so a client looking up this preview finds either nothing sent yet or a running change.
@@ -1386,6 +1465,7 @@ class ScaleConnectService:
                     "started_at": started_at,
                     "scales": list(names),
                     "not_touched": list(not_touched),
+                    "left_out": list(left_out),
                     "config_path": str(self._config.path) if self._config.path else None,
                     "backups": backup_notes,
                     "changes": [p.difference.to_dict() for p in stamped],
@@ -1400,6 +1480,20 @@ class ScaleConnectService:
         problems: list[str] = []
         results: list[ScaleResult] = []
         sent_records: dict[str, dict[int, Item]] = {}
+        writes_then = payload.get("left_out_writes") or {}
+        for name in left_out:
+            # Logged first, so a stop part way through cannot lose that this scale missed the change.
+            if writes_then.get(name, True) is False:
+                words = f"{name}: writes are off, and it gave no reply earlier, so it was not contacted. Nothing was sent."
+                result = self._uniform_result(name, ScaleStatus.SKIPPED_NOT_WRITE_ENABLED, words, [p.difference for p in stamped])
+            else:
+                result = self._left_out_result(name, stamped)
+            results.append(result)
+            sent_records[name] = {}
+            try:
+                self._catalog.append_log(change_id, EVENT_SCALE_RESULT, result.to_dict(), self._now_text())
+            except Exception as exc:
+                problems.append(f"The result for {name} could not be logged ({exc.__class__.__name__}).")
         for scale in targets:
             repeats: set[str] = set()
             result, sent = self._apply_to_scale(scale, stamped, stamp, tokens, payload.get("fills", {}).get(scale.name, ()), repeats)
@@ -1412,6 +1506,8 @@ class ScaleConnectService:
                 self._catalog.append_log(change_id, EVENT_SCALE_RESULT, result.to_dict(), self._now_text())
             except Exception as exc:
                 problems.append(f"The result for {scale.name} could not be logged ({exc.__class__.__name__}).")
+        order = [s.name for s in self._config.scales]
+        results.sort(key=lambda r: order.index(r.scale) if r.scale in order else len(order))
 
         problems.extend(self._commit(stamped, results, sent_records, change_id))
         still_differ = self._still_differ(stamped, results, sent_records)
@@ -1971,6 +2067,17 @@ class ScaleConnectService:
         )
 
     @staticmethod
+    def _left_out_result(name: str, plans: Sequence[_Plan]) -> ScaleResult:
+        """A scale the preview left out because it may be frozen. Not contacted. Each record is not_sent,
+        which the unfinished list reads as a miss once the catalog takes the change."""
+        message = (
+            f"{name}: left out. It gave no reply earlier, so nothing was read or sent to it. "
+            "It is on the unfinished list as missing this change until a person has checked it."
+        )
+        items = tuple(ItemResult(p.difference.item_id, p.difference.plu, p.difference.action, ITEM_NOT_SENT, "") for p in plans)
+        return ScaleResult(scale=name, status=ScaleStatus.NOT_AVAILABLE.value, message=message, attempts=0, items=items)
+
+    @staticmethod
     def _uniform_result(name: str, status: ScaleStatus, message: str, differences: Sequence[Difference]) -> ScaleResult:
         return ScaleResult(
             scale=name,
@@ -2215,12 +2322,14 @@ class ScaleConnectService:
         plus: Sequence[str] | None = None,
         ids: Sequence[int] | None = None,
         scales: Sequence[str] | None = None,
+        avoid_frozen: bool = False,
     ) -> list[ScaleRead]:
         """What each enabled scale holds right now. Writes nothing.
 
         Give PLUs, ids or both to get only those records. Give neither for every record.
         A PLU can be under any id, so PLUs or neither read the whole table. Ids alone stop
-        as soon as the highest one is reached.
+        as soon as the highest one is reached. avoid_frozen leaves out, under the apply lock, any
+        scale that may be frozen: it comes back not_contacted with may_be_frozen true, and is not read.
         """
         wanted_plus = list(plus) if plus is not None else []
         wanted_ids = list(ids) if ids is not None else []
@@ -2232,7 +2341,12 @@ class ScaleConnectService:
         up_to = max(wanted_ids) if wanted_ids and not wanted_plus and plus is None else None
         out: list[ScaleRead] = []
         with _apply_lock(self._lock_path):
+            # Under the lock, so a freeze another process logged a moment ago is seen.
+            frozen = set(self.scales_may_be_frozen()) if avoid_frozen else set()
             for scale in chosen:
+                if scale.name in frozen:
+                    out.append(ScaleRead(scale.name, "not_contacted", _frozen_skip_words(scale.name), may_be_frozen=True))
+                    continue
                 out.append(self._read_one(scale, up_to, wanted_plus, wanted_ids))
         return out
 
@@ -2244,12 +2358,14 @@ class ScaleConnectService:
         try:
             identity = client.identify()
             if not identity.ok:
+                self._note_no_reply(name, "read", identity)
                 return ScaleRead(name, identity.status.value, identity.message, may_be_frozen=identity.may_be_frozen)
             read = client.read_items(up_to)
         except Exception as exc:
             return ScaleRead(name, "read_failed", f"{name}: the read failed ({exc.__class__.__name__}).")
         second_try = getattr(read, "repeated", False) is True
         if not read.ok:
+            self._note_no_reply(name, "read", read)
             return ScaleRead(name, (read.status or ScaleStatus.READ_FAILED).value, read.message, may_be_frozen=read.may_be_frozen, read_repeated=second_try)
         self._save_reads(name, read)
         catalog = {i.id: i for i in self._catalog.list_items()}
@@ -2302,12 +2418,14 @@ class ScaleConnectService:
         plu: str | None = None,
         id: int | None = None,
         requested_by: str = "unknown",
+        avoid_frozen: bool = False,
     ) -> Preview:
         """Settle one item that differs on one scale, in the direction a person chose.
 
         take="scale" copies what the scale holds into the catalog, and writes nothing to the
         scale. take="catalog" writes the catalog's record to the scale through the normal
         seven steps. This reads the scale now. Apply with apply_change, naming the drift token.
+        avoid_frozen refuses with scale_may_be_frozen, under the apply lock, if that scale may be frozen.
         """
         now = self._clock()
         created_at = now.isoformat(timespec="seconds")
@@ -2351,7 +2469,10 @@ class ScaleConnectService:
         probe = _Plan(Difference(0, action, item.id, item.plu, {}, item, item), {})
         client = self._scale_factory(target, self._settings, sleep=self._sleep)
         with _apply_lock(self._lock_path):
-            table = self._identify_and_read(target, client, [probe], repeats)
+            # Under the lock, so a freeze another process logged a moment ago is seen.
+            if avoid_frozen and scale in self.scales_may_be_frozen():
+                return refused("scale_may_be_frozen", _frozen_skip_words(scale), "scale")
+            table = self._identify_and_read(target, client, [probe], repeats, what="settle_preview")
         if isinstance(table, ScaleResult):
             return refused("settle_read_failed", table.message, "scale", frozen=table.may_be_frozen)
         held = _real_records(table)
@@ -2475,12 +2596,14 @@ class ScaleConnectService:
         try:
             identity = client.identify()
             if not identity.ok:
+                self._note_no_reply(name, "compare", identity)
                 return ScaleComparison(name, identity.status.value, identity.message, may_be_frozen=identity.may_be_frozen)
             read = client.read_items(None)
         except Exception as exc:
             return ScaleComparison(name, "read_failed", f"{name}: the read failed ({exc.__class__.__name__}).")
         second_try = getattr(read, "repeated", False) is True
         if not read.ok:
+            self._note_no_reply(name, "compare", read)
             return ScaleComparison(name, (read.status or ScaleStatus.READ_FAILED).value, read.message, may_be_frozen=read.may_be_frozen, read_repeated=second_try)
         self._save_reads(name, read)
         catalog = {i.id: i for i in self._catalog.list_items()}
@@ -2531,11 +2654,13 @@ class ScaleConnectService:
             try:
                 identity = client.identify()
                 if not identity.ok:
+                    self._note_no_reply(name, "orphans", identity)
                     return OrphanMarks(name, identity.status.value, identity.message, may_be_frozen=identity.may_be_frozen)
                 read = client.read_items(None)
             except Exception as exc:
                 return OrphanMarks(name, "read_failed", f"{name}: the read failed ({exc.__class__.__name__}).")
             if not read.ok:
+                self._note_no_reply(name, "orphans", read)
                 return OrphanMarks(name, (read.status or ScaleStatus.READ_FAILED).value, read.message, may_be_frozen=read.may_be_frozen)
             self._save_reads(name, read)
             listed = {i.id for i in self._catalog.list_items()}
@@ -2610,6 +2735,11 @@ class ScaleConnectService:
             failed = exc.__class__.__name__
         # One row of a scale that gave no reply is enough. Going back for another row reads that same scale.
         stuck = {u.scale for u in out if (u.scale, u.item_id) in frozen}
+        try:
+            # So is a scale that gave no reply to anything else, such as a check or a review, with no read since.
+            stuck |= self._frozen_by_events()
+        except Exception as exc:
+            failed = exc.__class__.__name__
         out = [self._as_frozen(u) if u.scale in stuck else u for u in out]
         if failed is not None:
             words = f"The list of unfinished work could not be built ({failed}), so it may leave things out. Do not read it as all clear."
@@ -2621,7 +2751,7 @@ class ScaleConnectService:
         """The row's own words would say to settle or repeat, and either one reads that scale."""
         plu_words = f"PLU {work.plu}" if _PLU.fullmatch(work.plu) else "the item"
         words = (
-            f"{work.scale} has not confirmed a change to {plu_words} at id {work.item_id}. It gave no reply on a logged change, so it may have frozen. "
+            f"{work.scale} has not confirmed a change to {plu_words} at id {work.item_id}. It gave no reply, and has not answered a read since, so it may have frozen. "
             "Do not read it until a person says it has been checked."
         )
         return replace(work, may_be_frozen=True, message=words)
@@ -2773,46 +2903,68 @@ class ScaleConnectService:
         frozen = {key for key, at in frozen_at.items() if not self._read_of_scale_since(key[0], at, newest)}
         return pending, frozen
 
-    def _read_of_scale_since(self, scale: str, since: str | None, cache: dict[str, str | None] | None = None) -> bool:
-        """A read of this scale was saved after that moment, so it answered then. Times are to the second,
-        so a read in the same second does not count. Reads no scale. A catalog that cannot say counts as no."""
+    def _read_of_scale_since(self, scale: str, since: str | None, cache: dict[str, datetime | None] | None = None) -> bool:
+        """A read of this scale answered after that moment: a saved read, or a whole read that found nothing
+        to keep, such as an empty table. Times are to the second, so a read in the same second does not count.
+        Reads no scale. A catalog that cannot say counts as no."""
         cache = {} if cache is None else cache
         if scale not in cache:
             try:
-                cache[scale] = max((r["at"] for r in self._catalog.last_reads_for_scale(scale).values()), default=None)
+                times = [r["at"] for r in self._catalog.last_reads_for_scale(scale).values()]
+                answered = self._catalog.read_answered_at(scale)
+                if answered:
+                    times.append(answered)
+                cache[scale] = max((t for t in map(_parsed_time, times) if t is not None), default=None)
             except Exception:
                 cache[scale] = None
         newest = cache[scale]
+        then = _parsed_time(since)
         try:
-            return newest is not None and datetime.fromisoformat(newest) > datetime.fromisoformat(since or "")
-        except (TypeError, ValueError):
+            return newest is not None and then is not None and newest > then
+        except TypeError:
             return False
 
-    def scales_may_be_frozen(self, unfinished: Sequence[UnfinishedWork] | None = None) -> list[str]:
-        """Scales that gave no reply on a logged change or reload, with no read of them saved since. Reads no scale.
+    def _note_no_reply(self, name: str, what: str, outcome: Any) -> None:
+        """Keep a read that ended may_be_frozen, so the page, the unfinished list and Claude all see it,
+        from any process, until a read of that scale answers. A logged change keeps its own. Never raises."""
+        if getattr(outcome, "may_be_frozen", False) is not True:
+            return
+        try:
+            self._catalog.note_read_no_reply(name, what, self._now_text())
+        except Exception:
+            log.warning("A read of %s got no reply, and that could not be noted in the log.", name)
 
-        This covers more than the frozen rows in list_unfinished: a one scale change that moved nothing,
-        and a reload, leave no row. It cannot see a stall in a preview or a compare, which is not logged.
-        A log that cannot be read gives what the rows say, and no more.
+    def _frozen_by_events(self) -> set[str]:
+        """Scales whose newest no reply, on a logged change, a reload or any other read, has no read that
+        answered since. Raises if the log cannot be read, so a caller can refuse rather than allow."""
+        last: dict[str, datetime] = {}
+        for scale, at in [*self._catalog.frozen_scale_results(), *self._catalog.read_no_reply_events()]:
+            when = _parsed_time(at)
+            if when is None:
+                when = datetime.max.replace(tzinfo=timezone.utc)  # a time nobody can read counts as now, and stays
+            try:
+                if scale not in last or when > last[scale]:
+                    last[scale] = when
+            except TypeError:
+                last[scale] = when
+        newest: dict[str, datetime | None] = {}
+        return {scale for scale, when in last.items() if not self._read_of_scale_since(scale, when.isoformat(), newest)}
+
+    def scales_may_be_frozen(self, unfinished: Sequence[UnfinishedWork] | None = None) -> list[str]:
+        """Scales that gave no reply, with no read of them that answered since. Reads no scale.
+
+        No reply means on a logged change or reload, or on any other read: a check, a preview, a settle
+        preview, a compare or an orphan read. This covers more than the frozen rows in list_unfinished,
+        since a one scale change that moved nothing, a reload and a read leave no row. If the log cannot
+        be read, every configured scale is named, so nothing is read or sent on a guess.
         """
         work = self.list_unfinished() if unfinished is None else unfinished
         names = {u.scale for u in work if u.may_be_frozen}
-        newest: dict[str, str | None] = {}
-        try:
-            events = self._catalog.frozen_scale_results()
-        except Exception:
-            events = []
-        last: dict[str, str] = {}
-        for scale, at in events:
-            try:
-                if scale not in last or datetime.fromisoformat(at) > datetime.fromisoformat(last[scale]):
-                    last[scale] = at
-            except (TypeError, ValueError):
-                continue
-        for scale, at in last.items():
-            if not self._read_of_scale_since(scale, at, newest):
-                names.add(scale)
         order = [s.name for s in self._config.scales]
+        try:
+            names |= self._frozen_by_events()
+        except Exception:
+            names |= set(order)
         return [name for name in order if name in names]
 
     def settle_ended_a_miss(self, record: ChangeRecord) -> bool:
@@ -3105,11 +3257,14 @@ class ScaleConnectService:
         read = client.read_items(None, patient=True)
         if not read.ok:
             detail = read.message.replace(scale_module.FROZEN_NOTE, "").strip()
-            message = (
-                f"{name}: the scale accepted all {len(records)} records, but the read to check them failed. "
-                f"The scale may be frozen and need a reboot. It stopped trying once the read back window ended. Do not read it again until someone has checked it. {detail} {may_have}"
+            # Only the library's own marker says frozen. A bad answer on a scale that then closed is a plain failure.
+            frozen = read.may_be_frozen is True
+            why = (
+                "The scale may be frozen and need a reboot. It stopped trying once the read back window ended. Do not read it again until someone has checked it."
+                if frozen else "The scale answered badly, so nothing is confirmed. Check the scale before reading it again."
             )
-            return ReloadResult(name, accepted_word, False, message, may_be_frozen=True, **base), statuses, report.attempts, report.replies
+            message = f"{name}: the scale accepted all {len(records)} records, but the read to check them failed. {why} {detail} {may_have}"
+            return ReloadResult(name, accepted_word, False, message, may_be_frozen=frozen, **base), statuses, report.attempts, report.replies
         self._save_reads(name, read)
 
         differs = tuple(r.id for r in records if (held := read.items.get(r.id)) is None or held.to_fields() != r.to_fields())

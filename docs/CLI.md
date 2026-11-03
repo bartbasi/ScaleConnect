@@ -86,7 +86,7 @@ A whole table read takes about 30 seconds at the default pace.
 
 If a read gets no reply, the message says the scale may have frozen and may need a reboot. Check the scale before trying again. A read has frozen scales with damaged or old records. A gap in the ids is suspected too, but not proven.
 
-While a logged change or reload says a scale gave no reply, and nothing has read it since, the web page sends nothing that would reach it, and says "Did not answer. Tell Bart." Once you have looked at the scale, `compare --scale NAME` reads it once. If it answers, that clears it. Then `settle` finishes anything still listed. A reload clears it too.
+While a scale may be frozen, the web page sends nothing to it, and says "Did not answer. Tell Bart." That is after a logged change, a reload or any read, here or on the page, got no reply from it, and no read of it has answered since. A page review leaves that scale out, and the change goes to the other scales. The scale is then listed as missing that change. Once you have looked at the scale, `compare --scale NAME` reads it once. If it answers, that clears it, even if the table is empty after a factory reset. Then `settle` finishes anything still listed, including each change the page left it out of. A reload clears it too. Turning that scale's reads and writes both off in the config makes the page stop counting it at once, but then it gets no changes.
 
 ### reload
 

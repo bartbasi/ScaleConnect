@@ -88,17 +88,19 @@ def test_a_one_scale_stall_that_moved_nothing_is_still_named(make_env):
     env.fakes["B"].clear_faults()
     data = session.data("scale_list_scales")
     assert data["unfinished"] == [] and data["scales_may_be_frozen"] == ["B"]
-    assert "B: gave no reply on a logged change or reload, and has not been read since, so it MAY BE FROZEN" in data["summary"]
+    assert "B: gave no reply, and no read of it has answered since, so it MAY BE FROZEN" in data["summary"]
     assert server_module._FROZEN_NEXT_STEP in data["next_step"]
     env.svc.compare_scales(["B"])
     data = session.data("scale_list_scales")
     assert data["scales_may_be_frozen"] == [] and "next_step" not in data
 
 
-def test_the_list_tool_says_a_stall_in_a_preview_is_not_seen():
+def test_the_list_tool_says_a_stall_in_any_read_is_seen():
+    """Round 7 M1: a stall in a preview, a compare or the page's own check is now kept too."""
     description = server_module.build_server.__code__.co_consts  # the text is built inside build_server
     text = " ".join(c for c in description if isinstance(c, str))
-    assert "It cannot see a stall in a preview or a compare, which is not logged." in text
+    assert "It cannot see a stall in a preview or a compare" not in text
+    assert "and the web page's own checks and reviews. If the log cannot be read, it names every scale." in text
 
 
 # ---------------------------------------------------------------- N10

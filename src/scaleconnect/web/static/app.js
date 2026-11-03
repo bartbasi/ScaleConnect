@@ -342,11 +342,11 @@
         return box1;
       });
       /* A scale that did not answer must not be read again until someone has looked at it. The server leaves it out
-         of a check, and refuses any review or send while it may be frozen. This only says so before anyone taps. */
+         of a check and of every review, and a change goes to the other scales. This only says so before anyone taps. */
       var frozen = d.frozen_scales || [];
       var stuck = frozen.length ? box('bad', 'Did not answer', 'Did not answer. Tell Bart.',
         frozen.join(', ') + ' did not answer earlier. This page will not check or change ' + frozen.join(', ') +
-        ', and no change can be sent to any scale, until Bart has looked at it.') : null;
+        ' until Bart has looked at it. A change goes to the other scales only.') : null;
       var nodes = [
         h('p', { class: 'small' }, h('a', { href: '#/', text: 'Back to search' })),
         h('div', { class: 'box' }, h('div', { class: 'big', text: it.plu }), h('div', { class: 'line', text: it.description }),
@@ -595,6 +595,12 @@
       }
       var rep = draft.repeat || null;
       var blocked = false; var needed = [];
+      var leftOut = pv.left_out || [];
+      /* A scale that did not answer earlier is left out. Said first, before anything else on the review. */
+      if (leftOut.length) {
+        holder.appendChild(box('bad', 'Left out', pv.left_out_text || (leftOut.join(', ') + ' is left out. It did not answer last time. Tell Bart.'),
+          'This change goes to the other scales only.'));
+      }
       /* A repeat is about one item, named by its PLU. If the review shows another item, nothing may be sent. */
       var wrongItem = !!rep && (pv.differences.length === 0 || pv.differences.some(function (d) {
         var shown = rep.kind === 'delete' ? (d.action === 'delete' ? (d.before || {}).plu : null) : (d.action === 'edit' ? (d.after || {}).plu : null);
@@ -626,6 +632,11 @@
         if (rep && rep.kind === 'plu_change' && wn.code === 'plu_change') {
           /* Finishing a PLU change shows no field change, so the repeat box above says what it does. */
           if (wn.requires_ack) { repTicked = true; tick('ack' + i, key, repeatTick(rep)); }
+          return;
+        }
+        if (wn.code === 'scale_left_out') {
+          /* The box at the top already says it. Only the tick is here. */
+          if (wn.requires_ack) { tick('ack' + i, key, 'I understand. ' + leftOut.join(', ') + ' will not get this change.'); }
           return;
         }
         if (wn.code === 'gap_filled') {
@@ -663,6 +674,9 @@
         else { line = 'Not checked. The send will check it first.'; cls = 'warn'; }
         holder.appendChild(box(cls, name, line));
       });
+      leftOut.forEach(function (name) {
+        holder.appendChild(box('bad', name, 'Left out. It did not answer last time. Nothing is read or sent to it. Tell Bart.'));
+      });
       pv.drift.forEach(function (dr, i) {
         var plain = dr.plain || null;   /* staff words from the server for a drift nobody may override */
         holder.appendChild(box('bad', dr.scale, plain ? plain.plain : dr.message, (plain && plain.note) || dr.plain_note || null));
@@ -681,7 +695,8 @@
       if (frozenSeen) {
         /* Sending reads that scale again, which can freeze it for good. Nothing goes out until a person has looked. */
         blocked = true;
-        holder.appendChild(box('bad', 'Do not send', 'A scale did not answer, and sending would read it again.', 'Tell Bart. Do not try again and again.'));
+        holder.appendChild(box('bad', 'Do not send', 'A scale did not answer, and sending would read it again.',
+          'Tell Bart. Do not try again and again. To send to the other scales only, go back and review it again. That scale will be left out.'));
       }
       if (checkError) {
         /* The read check did not run. A change that needs empty slots is refused unless a review showed them. */
@@ -806,6 +821,7 @@
       if (d.state === 'running' || d.state === 'not_sent') { head.firstChild.className = 'tag dots'; }
       if (d.state === 'stalled') { head.firstChild.textContent = 'Stopped'; }
       holder.appendChild(head);
+      if (d.left_out_text) { holder.appendChild(box('bad', 'Left out', d.left_out_text, 'This change went to the other scales only.')); }
       if (d.display && d.display !== d.heading && d.state === 'finished') { holder.appendChild(h('p', { class: 'plain', text: d.display })); }
       d.rows.forEach(function (r) {
         var b = h('div', { class: 'box ' + r.severity },

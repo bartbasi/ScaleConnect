@@ -112,6 +112,23 @@ class InterruptedChange(ScaleConnectError):
     exit_code = 5
 
 
+class ScaleMayBeFrozen(ScaleConnectError):
+    """A scale this would reach gave no reply, and nothing has read it since. Checked under the apply lock,
+    only when the caller asks for it, as the web page does. Nothing was read or sent."""
+
+    code = "scale_may_be_frozen"
+    exit_code = 5
+
+    def __init__(self, message: str = "", scales: Sequence[str] = ()) -> None:
+        super().__init__(message)
+        self.scales = list(scales)
+
+    def to_dict(self) -> dict[str, Any]:
+        out = super().to_dict()
+        out["scales"] = list(self.scales)
+        return out
+
+
 class LogFailed(ScaleConnectError):
     """The change log could not be written, so nothing was sent."""
 

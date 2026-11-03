@@ -83,7 +83,7 @@ Every change reports one result per scale. Use these exact statuses:
 | `unknown` | Timeout or lost connection after sending. State unknown |
 | `unreachable` | Could not connect. Nothing sent |
 | `skipped_not_write_enabled` | The config does not allow writes to this scale |
-| `not_available` | Nothing reports this now that delete works. It stays so clients that know it keep working |
+| `not_available` | Nothing sent. The web page left this scale out because it may be frozen. Each item is `not_sent` |
 | `wrong_scale` | The serial at that address did not match the config. Nothing written |
 | `mismatch` | Accepted, but reading it back shows something different |
 | `drift_refused` | The scale's record differs from the catalog and that was not acknowledged. Nothing written |

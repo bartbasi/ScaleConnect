@@ -204,10 +204,32 @@ def row_drift_words(result: ScaleResult) -> str | None:
     return None
 
 
+def is_left_out(result: Any) -> bool:
+    """A scale a review left out because it did not answer: not_available, and no record sent. Any other
+    not_available result is an old one, from before the page could leave a scale out."""
+    items = getattr(result, "items", ())
+    return getattr(result, "status", None) == "not_available" and bool(items) and all(i.status == "not_sent" for i in items)
+
+
+def left_out_text(names: list[str]) -> str:
+    """Said at the top of a review and of a result. The change goes to the other scales."""
+    where = _list_text(names)
+    return f"{where} is left out. It did not answer last time. Tell Bart."
+
+
+LEFT_OUT_ROW = "left out. It did not answer last time, so nothing was sent to it. Tell Bart."
+LEFT_OUT_NOW = "It still has what it had. It stays on the Not finished list until Bart has looked at it."
+
+
 def scale_row(result: ScaleResult) -> dict[str, Any]:
     """One finished scale as a line for staff."""
     words, severity = status_words(result.status)
     now: str | None = None
+    if is_left_out(result):
+        return {
+            "scale": result.scale, "status": "left_out", "text": f"{result.scale}: {LEFT_OUT_ROW}", "severity": BAD, "state": "done",
+            "now": LEFT_OUT_NOW, "message": "", "may_be_frozen": False, "drift_tokens": [],
+        }
     refused = result.status == "drift_refused"
     refused_unfinished = refused and any(is_unfinished_move(d) for d in result.drift)
     refused_elsewhere = refused and any(is_plu_elsewhere(d) for d in result.drift)
@@ -312,7 +334,7 @@ def heading_for(outcome: str) -> tuple[str, str]:
 BAD_STATUSES = frozenset({"rejected", "unknown", "mismatch", "unreachable", "read_failed", "wrong_scale",
                           "drift_refused", "not_available", "not_sent", "no_result"})
 NOTHING_SENT = frozenset({"unreachable", "read_failed", "wrong_scale", "drift_refused",
-                          "skipped_not_write_enabled", "not_available"})
+                          "skipped_not_write_enabled", "not_available", "left_out"})
 FIELD_NAMES = {"price": "price", "description": "description", "plu": "PLU", "code": "code"}
 
 
@@ -450,6 +472,10 @@ def plain_error(error: dict[str, Any], unfinished: bool = False) -> dict[str, An
                 "A person at the command line must look at the list first.")
     elif code == "delete_not_available":
         text = "Deleting is not available right now. Ask Bart."
+    elif code == "scale_may_be_frozen":
+        # From the library, when a scale stopped answering between the page's own check and the apply lock.
+        names = [n for n in (error.get("scales") or []) if isinstance(n, str)]
+        text = frozen_send_refusal(names) if names else f"{DID_NOT_ANSWER} A scale did not answer earlier, so nothing was read or sent."
     if text is None:
         return error
     return {**error, "message": text}
@@ -492,7 +518,8 @@ def frozen_more(names: list[str]) -> str:
 
 
 def frozen_refusal(names: list[str]) -> dict[str, Any]:
-    """The page refuses to read or send while a scale it would reach may be frozen. Bart clears it through Claude or the command line."""
+    """The page refuses a review when every scale it would reach may be frozen, or a settle on such a scale.
+    Bart clears it through Claude or the command line."""
     where = _list_text(names)
     return {
         "code": "scale_may_be_frozen", "index": None, "field": None, "may_be_frozen": False, "scales": list(names),
@@ -500,11 +527,19 @@ def frozen_refusal(names: list[str]) -> dict[str, Any]:
     }
 
 
+def frozen_send_refusal(names: list[str]) -> str:
+    """A review that would reach a scale that stopped answering after it was made. A new review leaves that scale out."""
+    where = _list_text(names)
+    return f"{frozen_refusal(names)['message']} Go back and review it again. {where} will be left out."
+
+
 def frozen_scale_card(scale: str) -> dict[str, Any]:
-    """A scale that gave no reply on a change that left nothing unfinished, with no read since."""
+    """A scale that gave no reply, with nothing unfinished on it and no read since that answered. The reply may
+    have been missed on a change, a check or a review."""
     return {"kind": "frozen_scale", "item_id": None, "plu": None, "scales": [scale], "old_plus": [], "repeat": {}, "target": None,
             "stopping": [], "rolled_up": False, "no_fix": True, "button": None,
-            "text": f"{scale} did not answer during an earlier change, and nothing has read it since.", "more": f"{DID_NOT_ANSWER} {frozen_more([scale])}"}
+            "text": f"{scale} did not answer earlier, and nothing has read it since.",
+            "more": f"{DID_NOT_ANSWER} {frozen_more([scale])} A change goes to the other scales only."}
 
 
 def frozen_read_row(scale: str) -> dict[str, Any]:

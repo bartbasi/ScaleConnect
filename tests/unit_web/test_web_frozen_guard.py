@@ -49,8 +49,11 @@ def row_of(web, plu, scale):
     return {r["scale"]: r for r in item(web, plu)["scales"]}[scale]
 
 
-def assert_page_reaches_nothing_on(web, scale, plu):
-    """Every route a button calls: check, review of a change, an add, a delete, a repeat, a settle."""
+def assert_page_reaches_nothing_on(web, scale, plu, alone=False):
+    """Every route a button calls: check, review of a change, an add, a delete, a repeat, a settle.
+
+    Round 7 M2: a review leaves that scale out and goes to the others. Only when it is the one scale
+    left to reach is the review refused."""
     before = lp(web, scale)
     check = web.post("/api/check", {"plu": plu}).json()["scales"]
     shown = {r["scale"]: r for r in check}
@@ -62,8 +65,13 @@ def assert_page_reaches_nothing_on(web, scale, plu):
     ):
         for read in (False, True):
             pv = web.preview(changes, read=read).json()
-            assert pv["ok"] is False and pv["errors"][0]["code"] == "scale_may_be_frozen", pv
-            assert pv["errors"][0]["message"].startswith(DID_NOT_ANSWER) and scale in pv["errors"][0]["message"]
+            if alone:
+                assert pv["ok"] is False and pv["errors"][0]["code"] == "scale_may_be_frozen", pv
+                assert pv["errors"][0]["message"].startswith(DID_NOT_ANSWER) and scale in pv["errors"][0]["message"]
+                continue
+            assert pv["ok"] is True and scale not in pv["scales"] and pv["left_out"] == [scale], pv
+            assert pv["left_out_text"] == f"{scale} is left out. It did not answer last time. Tell Bart."
+            assert [w["requires_ack"] for w in pv["warnings"] if w["code"] == "scale_left_out"] == [True]
     settle = web.post("/api/settle/preview", {"scale": scale, "take": "catalog", "plu": plu}).json()
     assert settle["ok"] is False and settle["errors"][0]["code"] == "scale_may_be_frozen"
     assert lp(web, scale) == before, "the page must send no LP to a scale that may be frozen"
@@ -115,7 +123,7 @@ def test_a_stall_that_left_no_row_still_gets_a_card_and_blocks_the_page(make_web
     assert web.env.svc.list_unfinished() == []
     cards = web.client.get("/api/unfinished").json()["items"]
     assert [c["kind"] for c in cards] == ["frozen_scale"] and cards[0]["button"] is None and DID_NOT_ANSWER in cards[0]["more"]
-    assert_page_reaches_nothing_on(web, "B", "1001")
+    assert_page_reaches_nothing_on(web, "B", "1001", alone=True)
 
 
 def test_a_review_made_before_the_freeze_cannot_be_sent(make_web):
@@ -132,14 +140,15 @@ def test_bart_clears_it_with_one_compare_of_that_scale_and_the_page_works_again(
     """Through Claude or the command line, once a person has looked: a compare of that scale that answers."""
     web = three(make_web)
     stall_at_send(web, [{"action": "edit", "target_plu": "1001", "price": "11.00"}])
-    assert web.preview([{"action": "edit", "target_plu": "1002", "price": "7.00"}]).json()["ok"] is False
+    assert web.preview([{"action": "edit", "target_plu": "1002", "price": "7.00"}]).json()["left_out"] == ["B"]
     compared = web.env.svc.compare_scales(["B"])
     assert compared[0].status == "compared"
     assert web.env.svc.scales_may_be_frozen() == []
     assert item(web, "1001")["frozen_scales"] == []
     card = [c for c in web.client.get("/api/unfinished").json()["items"] if c["scales"] == ["B"]][0]
     assert card["button"] == "Fix this on B", "the miss is still open, now with its usual button"
-    assert web.preview([{"action": "edit", "target_plu": "1002", "price": "7.00"}]).json()["ok"] is True
+    again = web.preview([{"action": "edit", "target_plu": "1002", "price": "7.00"}]).json()
+    assert again["ok"] is True and again["left_out"] == [] and "B" in again["scales"]
 
 
 def test_a_scale_the_page_cannot_reach_does_not_block_it(make_web):

@@ -54,6 +54,7 @@ class SendJobs:
         acknowledge_warnings: bool,
         acknowledge_drift: list[str],
         requested_by: str,
+        avoid_frozen: bool = False,
     ) -> tuple[Job, bool]:
         """(job, started_now). A repeated preview id returns the same job and starts nothing."""
         with self._lock:
@@ -69,20 +70,21 @@ class SendJobs:
                     del self._jobs[key]
         thread = threading.Thread(
             target=self._run,
-            args=(job, acknowledge_warnings, list(acknowledge_drift), requested_by),
+            args=(job, acknowledge_warnings, list(acknowledge_drift), requested_by, avoid_frozen),
             name=f"send-{preview_id[:8]}",
             daemon=True,
         )
         thread.start()
         return job, True
 
-    def _run(self, job: Job, ack_warnings: bool, ack_drift: list[str], who: str) -> None:
+    def _run(self, job: Job, ack_warnings: bool, ack_drift: list[str], who: str, avoid_frozen: bool = False) -> None:
         try:
             record = self._service.apply_change(
                 job.preview_id,
                 acknowledge_warnings=ack_warnings,
                 acknowledge_drift=ack_drift,
                 requested_by=who,
+                avoid_frozen=avoid_frozen,
             )
             job.change_id = record.change_id
             job.state = "done"

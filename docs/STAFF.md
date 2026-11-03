@@ -105,7 +105,7 @@ For a new item or a price change that missed one scale, the box says "The newest
 
 Some boxes have no button. That is on purpose.
 
-- **"Did not answer. Tell Bart."** The scale gave no reply. Do not check it or change it. While this shows, the page will not send any change to any scale, and a box for a delete or a PLU change has no Repeat button. "Check the scales now" still reads the other scales, and leaves that one out. If you try a change, the review says "Did not answer. Tell Bart." and nothing is sent.
+- **"Did not answer. Tell Bart."** The scale gave no reply, to a change, a check or a review. Do not check it or change it. While this shows, the page sends nothing to that scale, and its boxes have no button. "Check the scales now" still reads the other scales, and leaves that one out. You can still change items. The change goes to the other scales only. See "When a scale is left out" below.
 - **"Our list did not take it."** The change may be on that scale, and our list still has the old value. Check this scale, then call Bart. Putting our list on that scale would put the old value back.
 - **A count, such as "12 items have not been confirmed".** Many items missed that scale. Tell Bart. One check of that scale clears any that match.
 - **"The list of work not finished could not be built."** Do not take this as all clear. Tell Bart.
@@ -122,7 +122,17 @@ Sometimes the box says the change "may have landed", and that nobody has confirm
 
 A repeat on an old result can be out of date. If the item has been finished or replaced since, the page says "This repeat is out of date" and sends nothing.
 
-If a scale did not answer, the review says "Do not send" and the send button is off. Do not try again and again. Tell Bart.
+If a scale did not answer while the review was checking it, the review says "Do not send" and the send button is off. Do not try again and again. Tell Bart. To send the change to the other scales only, go back and review it again. That scale is then left out.
+
+### When a scale is left out
+
+If a scale did not answer earlier, a review leaves it out. A red box at the top of the review says so, for example: "FRONT is left out. It did not answer last time. Tell Bart." Tick the box that says you understand. The change then goes to the other scales only.
+
+The result says the same thing at the top. The line for that scale says it was left out, and that nothing was sent to it. It still has the old price, or does not have the item.
+
+That scale then shows in "Not finished" as missing the change. Its box says "Did not answer. Tell Bart." and has no button. Only Bart can clear it. He checks the scale, then puts the change on it.
+
+If every scale a change would reach did not answer, the review says "Did not answer. Tell Bart." and nothing is sent.
 
 A box for a delete or a PLU change goes away only when that scale has confirmed it. Until then, do not give the old PLU or the new PLU to another item.
 
@@ -154,6 +164,7 @@ You see one line for each scale.
 | This is not the scale it should be | Nothing was sent. | Tell Bart. |
 | The scale holds something different from our list | Nothing was sent. | Tell Bart. Do not force it. |
 | Changes are turned off for this scale | Nothing was sent to this scale. | Tell Bart. That scale still has the old price. |
+| Left out. It did not answer last time, so nothing was sent to it. | This scale did not answer earlier, so the change went to the other scales only. | Tell Bart. See "When a scale is left out". |
 | This action is not available | Nothing was sent. | Ask Bart. |
 | An earlier PLU change did not finish on this scale | Nothing was sent. The scale is still on the old PLU, and the old PLU still works on it. | Tap "Repeat the PLU change". See "Not finished work". |
 | This scale gave back fewer items than our list has | Nothing was sent. The scale differs from our list, and a person must look at it. | Tell Bart. Do not force it. See "If a scale differs from the list". |
@@ -223,7 +234,7 @@ This means the scale stopped answering the page. It may have frozen. It can stil
 
 Nothing was changed on a scale that did not answer, unless the line for that scale says otherwise. Check the price on the scale display.
 
-For Bart: the reload command is in `docs/CLI.md`. Do not read the scale again until it has been checked. Once you have looked at it, read it once to clear "Did not answer": ask Claude to compare that scale, or run the compare command for that one scale at the command line. `docs/CLI.md` has it. Then finish anything still listed, with a settle through Claude or `settle` at the command line. A reload clears it too.
+For Bart: the reload command is in `docs/CLI.md`. Do not read the scale again until it has been checked. Once you have looked at it, read it once to clear "Did not answer": ask Claude to compare that scale, or run the compare command for that one scale at the command line. `docs/CLI.md` has it. A compare that answers clears it, even if the scale is empty after a factory reset. Then finish anything still listed, including each change it was left out of, with a settle through Claude or `settle` at the command line. A reload clears it too. If its reads and writes are both turned off in the settings file, the page stops counting it at once, but then it gets no changes at all.
 
 Never touch the scale's calibration or settings. ScaleConnect does not change them.
 

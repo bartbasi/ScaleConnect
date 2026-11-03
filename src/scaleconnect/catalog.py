@@ -41,6 +41,8 @@ _LOCK_GAP_SECONDS = 0.03
 _BUSY_SECONDS = 10
 BELIEFS = ("present", "absent", "unknown")
 _SUCCESS = ("verified", "accepted_not_verified")
+READ_NO_REPLY = "read_no_reply"  # a log event: a read that is not a logged change got no reply
+_ANSWERED_KEY = "read_answered:"  # a meta key, then the scale name: when a read of it last answered in full
 
 _COLS = (
     "id", "code", "plu", "description", "price", "field6",
@@ -924,11 +926,38 @@ class Catalog:
                 out.append((scale, r["at"]))
         return out
 
+    def note_read_no_reply(self, scale: str, what: str, at: str) -> None:
+        """A read of this scale that is not a logged change ended with may_be_frozen: a check, a preview,
+        a settle preview, a compare or an orphan read. Kept in the log, which has no update and no delete."""
+        self.append_log(uuid.uuid4().hex, READ_NO_REPLY, {"scale": scale, "read": what, "may_be_frozen": True, "at": at}, at)
+
+    def read_no_reply_events(self) -> list[tuple[str, str]]:
+        """(scale, at) for each read noted by note_read_no_reply, oldest first. A row that cannot be read is
+        given with the scale from its own column, so a damaged row still counts against that scale."""
+        out: list[tuple[str, str]] = []
+        for r in self._conn().execute(
+                "SELECT payload, at, scale FROM change_log WHERE event = ? ORDER BY log_id", (READ_NO_REPLY,)):
+            if isinstance(r["scale"], str) and isinstance(r["at"], str):
+                out.append((r["scale"], r["at"]))
+        return out
+
+    def note_read_answered(self, scale: str, at: str) -> None:
+        """A read of this scale answered in full, even if it found nothing to keep, such as an empty table.
+        One value per scale, in meta. Only the newest matters."""
+        with self._tx() as db:
+            db.execute("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                       (_ANSWERED_KEY + scale, at))
+
+    def read_answered_at(self, scale: str) -> str | None:
+        row = self._conn().execute("SELECT value FROM meta WHERE key = ?", (_ANSWERED_KEY + scale,)).fetchone()
+        return row[0] if row is not None else None
+
     def list_change_ids(self, limit: int = 50) -> list[str]:
-        """Newest first, by when each change first appears in the log."""
+        """Newest first, by when each change first appears in the log. A read with no reply is not a change,
+        and many of them must not push real changes out of the list."""
         return [r[0] for r in self._conn().execute(
-            "SELECT change_id FROM change_log GROUP BY change_id ORDER BY MIN(log_id) DESC LIMIT ?",
-            (limit,))]
+            "SELECT change_id FROM change_log WHERE event != ? GROUP BY change_id ORDER BY MIN(log_id) DESC LIMIT ?",
+            (READ_NO_REPLY, limit))]
 
     def open_change_ids(self) -> list[str]:
         """Changes that started and have no finish. Newest first."""

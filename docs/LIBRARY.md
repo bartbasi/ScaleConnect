@@ -150,7 +150,11 @@ A real fill gives the warning `gap_filled`, which needs acknowledging. So does a
 
 ### A scale that may be frozen
 
-`may_be_frozen` is true on a result where a scale gave no reply, or answered a read badly in any way and then did not close when we hung up. It is on `ScaleResult`, `ScaleRead`, `ScaleComparison`, `OrphanMarks`, `ReloadResult`, `PreviewWarning` (`scale_read_failed`) and `PreviewError` (`settle_read_failed`). Do not read that scale again until a person has checked it and rebooted it if needed, because a table that froze it can freeze it again. Use the field, and do not match the words.
+`may_be_frozen` is true on a result where a scale gave no reply, or answered a read badly in any way and then did not close when we hung up. A failed connect sets it too, and so does a reload whose read back got no reply or did not close. A reload read back that answered badly and then closed does not. It is on `ScaleResult`, `ScaleRead`, `ScaleComparison`, `OrphanMarks`, `ReloadResult`, `PreviewWarning` (`scale_read_failed`) and `PreviewError` (`settle_read_failed`). Do not read that scale again until a person has checked it and rebooted it if needed, because a table that froze it can freeze it again. Use the field, and do not match the words.
+
+`scales_may_be_frozen()` names each scale whose newest no reply has no read since that answered. A no reply on a logged change or reload is in its scale result. One on any other read, which is a preview, a compare, a read of items, a settle preview or an orphan read, is kept as a `read_no_reply` event in the change log. A read that answers in full sets a per scale time, even if it found an empty table, and that ends it. If the log cannot be read, every configured scale is named.
+
+`avoid_frozen=True`, which the web page passes, makes `preview_changes` leave out each scale that may be frozen: a `scale_left_out` warning that needs acknowledging, the names in `left_out`, and in the saved preview. If no scale with writes on is left, it refuses with `scale_may_be_frozen`. On apply, each scale left out gets a result of `not_available` with every item `not_sent`, and is not contacted, so `list_unfinished` lists it as missing that change. `apply_change`, `read_scale_items` and `preview_settle_drift` check the list again under the apply lock. Apply then raises `ScaleMayBeFrozen` before anything is sent if a scale it names may be frozen. A read leaves that scale out as `not_contacted` with `may_be_frozen` true. A settle preview refuses with `scale_may_be_frozen`.
 
 ### When a read goes wrong
 
@@ -246,7 +250,7 @@ class ScaleStatus(StrEnum):
 | `wrong_scale` | The serial at that address does not match the config. Nothing was written | No |
 | `drift_refused` | The scale holds a different product, differs and nobody acknowledged it, or holds something in the way. Nothing was written. See `drift` | No |
 | `skipped_not_write_enabled` | Writes are off for this scale. Nothing was sent | No |
-| `not_available` | Nothing reports this now that delete is available. It stays in the list for clients that know it | No |
+| `not_available` | Nothing was sent. The scale was left out because it may be frozen, with `avoid_frozen`. Each item is `not_sent` | No |
 
 A scale's status is the worst of its items, in this order: `wrong_scale`, `unknown`, `mismatch`, `rejected`, `drift_refused`, `read_failed`, `unreachable`, `not_available`, `skipped_not_write_enabled`, `accepted_not_verified`, `verified`.
 
@@ -465,14 +469,16 @@ class ScaleConnectService:
     def search_items(self, query: str, limit: int = 50) -> list[Item]
     def get_item(self, *, plu: str | None = None, id: int | None = None) -> ItemView
     def preview_changes(self, changes: Sequence[Change | dict], *, requested_by: str = "unknown",
-                        scales: Sequence[str] | None = None, read_scales: bool = False) -> Preview
+                        scales: Sequence[str] | None = None, read_scales: bool = False,
+                        avoid_frozen: bool = False) -> Preview
     def apply_change(self, preview_id: str, acknowledge_warnings: bool = False, *,
-                     acknowledge_drift: Sequence[str] = (), requested_by: str | None = None) -> ChangeRecord
+                     acknowledge_drift: Sequence[str] = (), requested_by: str | None = None,
+                     avoid_frozen: bool = False) -> ChangeRecord
     def compare_scales(self, scales: Sequence[str] | None = None) -> list[ScaleComparison]
     def read_scale_items(self, *, plus: Sequence[str] | None = None, ids: Sequence[int] | None = None,
-                         scales: Sequence[str] | None = None) -> list[ScaleRead]
+                         scales: Sequence[str] | None = None, avoid_frozen: bool = False) -> list[ScaleRead]
     def preview_settle_drift(self, *, scale: str, take: str, plu: str | None = None, id: int | None = None,
-                             requested_by: str = "unknown") -> Preview
+                             requested_by: str = "unknown", avoid_frozen: bool = False) -> Preview
     def get_change(self, change_id: str) -> ChangeRecord
     def get_change_for_preview(self, preview_id: str) -> ChangeRecord | None
     def list_changes(self, limit: int = 50) -> list[ChangeRecord]
@@ -482,6 +488,7 @@ class ScaleConnectService:
     def list_orphans(self) -> dict[int, list[str]]
     def mark_orphan(self, item_id: int, scale: str, note: str = "") -> None
     def list_unfinished(self) -> list[UnfinishedWork]
+    def scales_may_be_frozen(self, unfinished: Sequence[UnfinishedWork] | None = None) -> list[str]
     def config_changed(self) -> str | None
     def reload_scale(self, scale: str, *, accept_differences: bool = False, requested_by: str = "unknown") -> ReloadResult
     def apply_running(self) -> bool
@@ -659,6 +666,7 @@ All derive from `ScaleConnectError`. Each has `.code` (stable text), `.message` 
 | `PreviewStale` | `preview_stale` | 5 |
 | `PreviewAlreadyApplied` | `preview_already_applied` | 5 |
 | `InterruptedChange` | `interrupted_change` | 5 |
+| `ScaleMayBeFrozen` (has `.scales`, only with `avoid_frozen`) | `scale_may_be_frozen` | 5 |
 | `AcknowledgementRequired` | `acknowledgement_required` | 6 |
 | `ReloadDifferences` (has `.differences`, `.not_known` and `.last_read_at`) | `reload_differences` | 6 |
 | `ConfigChanged` | `config_changed` | 8 |

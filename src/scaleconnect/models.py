@@ -562,6 +562,7 @@ class Preview:
     drift: tuple[Drift, ...] = ()
     scales_read: tuple[str, ...] = ()
     scales_read_repeated: tuple[str, ...] = ()  # scales whose read needed a second try
+    left_out: tuple[str, ...] = ()  # scales left out because they may be frozen. Only with avoid_frozen
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -577,6 +578,7 @@ class Preview:
             "drift": [d.to_dict() for d in self.drift],
             "scales_read": list(self.scales_read),
             "scales_read_repeated": list(self.scales_read_repeated),
+            "left_out": list(self.left_out),
         }
 
 

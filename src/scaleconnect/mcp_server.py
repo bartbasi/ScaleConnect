@@ -66,7 +66,7 @@ STATUS_MEANINGS = {
     "wrong_scale": "The serial at that address does not match the config. Nothing was written.",
     "drift_refused": "The scale holds another product, differs and nobody acknowledged it, holds something in the way, holds a record that cannot be sent back, or has a table that does not look as the catalog expects. Nothing was written. See drift and items.",
     "skipped_not_write_enabled": "Writes are off for this scale in the config. Nothing was sent.",
-    "not_available": "This operation was not done, and nothing was sent. Nothing reports this now, but an old logged change can show it.",
+    "not_available": "Nothing was sent. The web page left this scale out because it may be frozen. An old logged change can show it too.",
     "not_sent": "An earlier problem on this scale stopped this record. It was not sent.",
 }
 
@@ -107,6 +107,8 @@ DATA_NOTE = (
 _WARNING_TEXT = {
     "price_change_large": "A price is more than 50 percent away from the current one.",
     "scale_not_targeted": "This leaves out some scales. They keep what they hold.",
+    "scale_left_out": "This leaves out a scale that gave no reply earlier. Nothing is read or sent there, and it stays unfinished.",
+    "scale_may_be_frozen": "A scale gave no reply earlier and was not read now. Do not apply this preview.",
     "orphan_replaced": "An add replaces what a scale holds at a recorded orphan id.",
     "no_change": "The catalog already has these values. Applying still reads each scale and sends the record, with a new timestamp.",
     "delete_placeholder": "A delete overwrites the id with a placeholder record, so the old PLU stops working on the scales. The id comes free once every scale has confirmed it.",
@@ -205,7 +207,7 @@ _STATUS_HELP = """Each scale gets one status. may_be_frozen true on a scale resu
 - unreachable, read_failed, wrong_scale: nothing was written.
 - drift_refused: the scale differs, or holds something in the way. Nothing was written. See drift and next_step. A reload may be the repair, and only a person can run it.
 - skipped_not_write_enabled: writes are off for this scale, so it still has the old value.
-- not_available: nothing sent. Only an old logged change shows it.
+- not_available: nothing sent. The web page gives it to a scale it left out because that scale may be frozen. Then each item is not_sent.
 An item can also be not_sent: an earlier problem on that scale stopped it."""
 
 _OUTCOME_HELP = """outcome is one of:
@@ -1135,7 +1137,7 @@ def _unfinished_next_step(unfinished: Sequence[Any]) -> str:
 
 
 def _frozen_words(work: Any) -> str:
-    return " It gave no reply on a logged change, so it MAY BE FROZEN. Do not read it." if work.may_be_frozen else ""
+    return " It gave no reply, and no read of it has answered since, so it MAY BE FROZEN. Do not read it." if work.may_be_frozen else ""
 
 
 def _unfinished_line(work: Any) -> str:
@@ -1321,13 +1323,18 @@ def build_server(service: ScaleConnectService, *, caller: str | None = None) -> 
             in_rows = {work.scale for work in unfinished if work.may_be_frozen}
             silent = [name for name in frozen if name not in in_rows]
             lines.extend(
-                f"{name}: gave no reply on a logged change or reload, and has not been read since, so it MAY BE FROZEN. Do not read it." for name in silent
+                f"{name}: gave no reply, and no read of it has answered since, so it MAY BE FROZEN. Do not read it." for name in silent
             )
             if restart:
                 lines.append("CONFIG CHANGED: the config file has changed since this server started. Previews and applies are refused until the server restarts.")
             steps = ([_RESTART_NEXT_STEP] if restart else []) + ([_unfinished_next_step(unfinished)] if unfinished else [])
-            if silent and not in_rows:
-                steps.append(_FROZEN_NEXT_STEP)
+            if silent:
+                # First, and by name, since the rows' own words may say to repeat or settle, and a preview with no scales reaches it.
+                named = ", ".join(silent)
+                steps.insert(0, (
+                    f"{named} MAY BE FROZEN, with no row of its own. {_FROZEN_NEXT_STEP} "
+                    f"Any repeat or settle for the rows below must name its scales and leave out {named}."
+                ) if unfinished else f"{named} MAY BE FROZEN. {_FROZEN_NEXT_STEP}")
             extra = {}
             if steps:
                 extra["next_step"] = " ".join(steps)
@@ -1755,7 +1762,7 @@ Use it first in any session. It contacts no scale, so last_status is history, no
 
 unfinished lists changes that some scale has not confirmed, per scale, from the catalog and its log. It says what may be so, not what a scale holds. kind says which: delete, plu_change or missed_change. Most have a repeat, which says what finishes it. A row the catalog did not take has an empty one. For a delete or plu_change it is a change for scale_preview_changes. For a missed_change it names the tool scale_preview_settle_drift and its arguments. Show the person, and use a repeat only if they agree. next_step says how.
 
-may_be_frozen true on a row means that scale gave no reply on a logged change, and nothing has read it since. Do not read it until the person says it has been checked. scales_may_be_frozen names those scales, and any other that gave no reply on a logged change or reload and has not been read since. It cannot see a stall in a preview or a compare, which is not logged. catalog_took_it false means the catalog did not take this change, that scale may hold the new value, and a settle to the catalog puts the old value back. differs_in means the last record sent differs from the catalog in those fields, even if it was verified. kind list_failed means the list could not be built, so do not read it as all clear. Many rows on one scale get one summary line, and every row stays in unfinished.
+may_be_frozen true on a row means that scale gave no reply, and no read of it has answered since. Do not read it until the person says it has been checked. scales_may_be_frozen names those scales, and any other that gave no reply and has not answered a read since. That covers logged changes and reloads, and every read: a preview, a compare, a read, a settle preview, an orphan read, and the web page's own checks and reviews. If the log cannot be read, it names every scale. catalog_took_it false means the catalog did not take this change, that scale may hold the new value, and a settle to the catalog puts the old value back. differs_in means the last record sent differs from the catalog in those fields, even if it was verified. kind list_failed means the list could not be built, so do not read it as all clear. Many rows on one scale get one summary line, and every row stays in unfinished.
 
 {_RELOAD_HELP}
 
