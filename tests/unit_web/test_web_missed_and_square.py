@@ -278,8 +278,9 @@ def test_the_item_page_does_not_say_matches_from_a_read_older_than_the_miss(make
     web.env.fakes["A"].clear_faults()
     row = item_row(web, "A")
     assert row["last_read"] is not None and row["differs"] == [], "the read itself does match"
-    assert row["flag"] == "unsure" and "Matches" not in row["text"]
-    assert "may differ from our list" in row["text"]
+    # Round 6 N3: a reload that got no read back carries the freeze flag, so the row says that, and offers nothing.
+    assert row["flag"] == "frozen" and "Matches" not in row["text"]
+    assert "Did not answer. Tell Bart." in row["text"] and row["can_fix"] is False
 
 
 def test_the_item_page_does_not_say_different_from_a_read_older_than_the_miss(make_web):
@@ -314,10 +315,11 @@ def test_the_settle_screen_keeps_the_choice_for_a_real_difference():
     assert "holds something different from our list. Pick which one is right." in settle
 
 
-def test_the_item_page_offers_no_check_while_a_scale_did_not_answer():
+def test_the_item_page_says_a_scale_did_not_answer_before_anyone_taps():
+    """Round 6 N1: the server leaves that scale out of a check and refuses reviews. The page says so first."""
     item = SCRIPT.split("function renderItem(plu, my, checked)")[1].split("if (d.sending_now)")[0]
-    assert "s.missed.kind === 'frozen'" in item
-    assert "stuck ? h('p', { class: 'plain', text: 'A check reads every scale, and one did not answer. Tell Bart.' }) :" in item
+    assert "d.frozen_scales" in item and "'Did not answer. Tell Bart.'" in item
+    assert "A check reads the other scales only." in item and "s.flag === 'frozen'" in item
 
 
 def test_a_card_with_no_button_shows_no_link():

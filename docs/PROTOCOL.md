@@ -360,8 +360,8 @@ Reply waits on full sends in test9 and test10. (Reply. `research/lab/cap_timing.
 - Make sure the count in `GP` matches the records.
 - Delete by overwriting the id with a placeholder. See section 7. Never send an `E` message.
 - Change a PLU by writing the same id with a new Code and PLU. Code always follows the PLU.
-- Say the scale may have frozen when a read gets no reply. See section 3.
-- Read once more, once, only when the scale kept answering and the answer made no sense. Never after silence, and never on a write.
+- Say the scale may have frozen when a read gets no reply, or when it answered badly and then did not close when we hung up. See section 3.
+- Read once more, once, only if that setting is on, and only after blocks out of order that came after a good block, on a scale that then closed. Never after any other bad answer, never after silence, and never on a write.
 - Reads of production scales need Bart's go ahead at the final gate.
 
 ## 12. Still unknown

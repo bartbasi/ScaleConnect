@@ -47,6 +47,9 @@ _NOT_CLOSED = "The scale did not close the connection after we hung up."
 
 _READ_SIZE = 4096
 _CLOSE_WAIT = 2.0
+# After a bad answer the close decides whether the scale may be frozen, so it gets longer. A scale that
+# has just sent a block again may be slow on the WiFi, and a false alarm costs a person a trip to look.
+_BAD_ANSWER_CLOSE_WAIT = 8.0
 _LARGEST_ID_SHOWN = 99999  # a broken block can hold an id of any length
 _READ_MESSAGES = {
     "CX": protocol.build_identity,
@@ -209,7 +212,7 @@ class ScaleClient:
         sock.settimeout(self._settings.reply_timeout_seconds)
         sock.sendall(_READ_MESSAGES[name]())
 
-    def _end_session(self, sock: socket.socket) -> bool:
+    def _end_session(self, sock: socket.socket, *, after_bad_answer: bool = False) -> bool:
         """Hang up, and give the scale a moment to finish before any next session.
 
         After an early stop the scale sends the block again and LP00End, then closes. A new
@@ -218,11 +221,13 @@ class ScaleClient:
 
         Returns whether the scale closed its side inside the wait. Bytes alone do not count,
         only the close or a reset that ends them. In a real freeze our hang up was never
-        answered. Only the order problem path in the read uses the answer.
+        answered. Only a read that the scale answered badly uses the answer, and only then
+        is the wait longer. The reply timeout caps both waits.
         """
+        longest = _BAD_ANSWER_CLOSE_WAIT if after_bad_answer else _CLOSE_WAIT
         try:
             sock.shutdown(socket.SHUT_WR)
-            deadline = time.monotonic() + min(_CLOSE_WAIT, self._settings.reply_timeout_seconds)
+            deadline = time.monotonic() + min(longest, self._settings.reply_timeout_seconds)
             while self._read_chunk(sock, deadline):
                 pass
             return True
@@ -398,9 +403,9 @@ class ScaleClient:
         that second LP goes out once. Every other bad answer is a plain failure, because some
         came right before a real freeze. See PROTOCOL.md section 3.
 
-        If blocks came out of order and the scale did not close, it may be frozen, so the
-        result says so, with the setting on or off. A scale that went silent is never read
-        again here.
+        If the scale answered badly in any way and did not close, it may be frozen, so the
+        result says so, with the setting on or off. After a bad answer the wait for that close
+        is up to 8 seconds, not 2. A scale that went silent is never read again here.
         """
         self._require_read_allowed()
         if patient:
@@ -432,14 +437,16 @@ class ScaleClient:
         def attempt() -> tuple[dict[int, Item], bool]:
             nonlocal closed
             sock = self._connect_read()
+            bad_answer = False
             try:
                 return self._read_table(sock, up_to_id, progress)
             except _ReadStopped as exc:
+                bad_answer = not exc.silent
                 if exc.no_reply:
                     raise _NoReplyYet(str(exc)) from exc
                 raise
             finally:
-                closed = self._end_session(sock)
+                closed = self._end_session(sock, after_bad_answer=bad_answer)
 
         name = self._scale.name
         try:
@@ -456,7 +463,8 @@ class ScaleClient:
     def _stopped_result(self, exc: _ReadStopped, closed: bool, progress: _ReadProgress) -> tuple[ReadResult, str | None]:
         """The result of a read that stopped, and the reason to give if a repeat may follow."""
         name = self._scale.name
-        if exc.order_problem and not closed:
+        if not exc.silent and not closed:
+            # Any bad answer, then no close. Blank records came right before a real freeze.
             message = f"{name}: the read failed ({exc}). {_NOT_CLOSED} {FROZEN_NOTE}"
             return ReadResult(False, ScaleStatus.READ_FAILED, message, {}, may_be_frozen=True), None
         result = ReadResult(False, ScaleStatus.READ_FAILED, _stopped_message(name, exc), {}, may_be_frozen=exc.silent)
@@ -536,7 +544,7 @@ class ScaleClient:
                     elif not exc.before_first_block or first_problem is not None:
                         return stop(ReadResult(False, ScaleStatus.READ_FAILED, _stopped_message(name, exc), {}, may_be_frozen=True))
                 finally:
-                    closed = self._end_session(sock)
+                    closed = self._end_session(sock, after_bad_answer=answered_badly is not None)
             if answered_badly is not None:
                 failed, problem = self._stopped_result(answered_badly, closed, progress)
                 if first_problem is not None:

@@ -296,7 +296,7 @@ _SQUARE_RULES = {
     ),
     "settles": (
         "A settle only brings one scale to match the catalog, or the catalog to match a scale. One that takes the catalog's record changes "
-        "what that scale sells if its fields hold a price, PLU or Code, or if the scale held nothing there. So check Square and the card, and "
+        "what that scale sells if its fields hold a price, PLU, Code, sold by or tax, or if the scale held nothing there. So check Square and the card, and "
         "tell the person. If Square and the labels were waiting on that scale, they are next, so ask the person. One that takes the scale's "
         "record can change the catalog, so check Square for that item and tell the person. A settle can also put back an old value, so read "
         "its fields before calling it finished."
@@ -700,10 +700,13 @@ def _settle_put_catalog_record(record: ChangeRecord) -> bool:
     )
 
 
+_SALE_FIELDS = frozenset({"price", "plu", "code", "fields_7_12"})  # fields 7 to 12 hold sold by and tax
+
+
 def _settle_changed_sale(record: ChangeRecord) -> bool:
-    """A settle to the catalog put a price, PLU or Code on that scale. No fields means the scale held nothing there, so all of it went."""
+    """A settle to the catalog put a price, PLU, Code, sold by or tax on that scale. No fields means the scale held nothing there, so all of it went."""
     return _settle_put_catalog_record(record) and any(
-        change.action == "settle_push" and (not change.fields or {"price", "plu", "code"} & set(change.fields)) for change in record.changes
+        change.action == "settle_push" and (not change.fields or _SALE_FIELDS & set(change.fields)) for change in record.changes
     )
 
 
@@ -895,8 +898,10 @@ def _change_payload(record: ChangeRecord, ended_miss: bool = False) -> dict[str,
 
 
 def _as_when_it_ran(payload: dict[str, Any]) -> dict[str, Any]:
-    """An old result. Nothing here can know what was done about Square or the labels since it ran."""
-    if not payload.get("still_to_do"):
+    """An old result. Nothing here can know what was done about Square or the labels since it ran.
+    A partial result has nothing in still_to_do, but its next_step still says Square and the labels are not done.
+    A failed one says they wait, which stays true, so it is left as it was."""
+    if not payload.get("still_to_do") and _SCALES_NOT_FINISHED_NEXT_STEP not in str(payload.get("next_step", "")):
         return payload
     step = f"When this ran: {payload['next_step']} The server cannot know what was done since, so check before doing any of it again."
     lines = payload["summary"].split("\n")
@@ -1024,7 +1029,7 @@ def _preview_payload(preview: Preview) -> dict[str, Any]:
             next_step += " They must agree to the drift, which then allows the tokens in drift_tokens_to_acknowledge."
         if any(d.kind == "delete_may_have_landed" for d in preview.drift):
             next_step += f" {_DELETE_MAY_HAVE_LANDED_NEXT_STEP}"
-        if any(d.action == "settle_push" and (not d.fields or {"price", "plu", "code"} & set(d.fields)) for d in preview.differences):
+        if any(d.action == "settle_push" and (not d.fields or _SALE_FIELDS & set(d.fields)) for d in preview.differences):
             next_step += f" {_SETTLE_CHANGED_SALE_NEXT_STEP}"
     lines.append(f"Next: {next_step}")
     return {
@@ -1312,9 +1317,17 @@ def build_server(service: ScaleConnectService, *, caller: str | None = None) -> 
             lines.extend(unfinished_lines[:_SUMMARY_LIST_LIMIT])
             if len(unfinished_lines) > _SUMMARY_LIST_LIMIT:
                 lines.append(f"And {len(unfinished_lines) - _SUMMARY_LIST_LIMIT} more not finished. See unfinished.")
+            frozen = service.scales_may_be_frozen(unfinished)
+            in_rows = {work.scale for work in unfinished if work.may_be_frozen}
+            silent = [name for name in frozen if name not in in_rows]
+            lines.extend(
+                f"{name}: gave no reply on a logged change or reload, and has not been read since, so it MAY BE FROZEN. Do not read it." for name in silent
+            )
             if restart:
                 lines.append("CONFIG CHANGED: the config file has changed since this server started. Previews and applies are refused until the server restarts.")
             steps = ([_RESTART_NEXT_STEP] if restart else []) + ([_unfinished_next_step(unfinished)] if unfinished else [])
+            if silent and not in_rows:
+                steps.append(_FROZEN_NEXT_STEP)
             extra = {}
             if steps:
                 extra["next_step"] = " ".join(steps)
@@ -1325,7 +1338,7 @@ def build_server(service: ScaleConnectService, *, caller: str | None = None) -> 
                     "config_changed": bool(restart),
                     "config_changed_message": restart,
                     "unfinished": [_unfinished_row(work) for work in unfinished],
-                    "scales_may_be_frozen": sorted({work.scale for work in unfinished if work.may_be_frozen}),
+                    "scales_may_be_frozen": frozen,
                     **extra,
                     "capabilities": capabilities,
                     "interrupted_change_ids": interrupted,
@@ -1740,9 +1753,9 @@ def build_server(service: ScaleConnectService, *, caller: str | None = None) -> 
 
 Use it first in any session. It contacts no scale, so last_status is history, not what a scale holds now. interrupted_change_ids are changes that stopped for good, and they block their items until resolved. scales_in_use is true if something is using the scales now. orphan_ids lists ids recorded as orphans, and which scale holds each. config_changed is true if the config file has changed since this server started. Then previews and applies are refused until a person restarts the web page and the MCP server together.
 
-unfinished lists changes that some scale has not confirmed, per scale, from the catalog and its log. It says what may be so, not what a scale holds. kind says which: delete, plu_change or missed_change. Each has a repeat, which says what finishes it. For a delete or plu_change it is a change for scale_preview_changes. For a missed_change it names the tool scale_preview_settle_drift and its arguments. Show the person, and use a repeat only if they agree. next_step says how.
+unfinished lists changes that some scale has not confirmed, per scale, from the catalog and its log. It says what may be so, not what a scale holds. kind says which: delete, plu_change or missed_change. Most have a repeat, which says what finishes it. A row the catalog did not take has an empty one. For a delete or plu_change it is a change for scale_preview_changes. For a missed_change it names the tool scale_preview_settle_drift and its arguments. Show the person, and use a repeat only if they agree. next_step says how.
 
-may_be_frozen true on a row means that scale gave no reply on a logged change. Do not read it until the person says it has been checked. catalog_took_it false means the catalog did not take this change, that scale may hold the new value, and a settle to the catalog puts the old value back. differs_in means the last record sent differs from the catalog in those fields, even if it was verified. kind list_failed means the list could not be built, so do not read it as all clear. Many rows on one scale get one summary line, and every row stays in unfinished.
+may_be_frozen true on a row means that scale gave no reply on a logged change, and nothing has read it since. Do not read it until the person says it has been checked. scales_may_be_frozen names those scales, and any other that gave no reply on a logged change or reload and has not been read since. It cannot see a stall in a preview or a compare, which is not logged. catalog_took_it false means the catalog did not take this change, that scale may hold the new value, and a settle to the catalog puts the old value back. differs_in means the last record sent differs from the catalog in those fields, even if it was verified. kind list_failed means the list could not be built, so do not read it as all clear. Many rows on one scale get one summary line, and every row stays in unfinished.
 
 {_RELOAD_HELP}
 
@@ -1890,7 +1903,7 @@ Ask the person which record is right. Look at the drift first, and do not choose
 - take="scale": the catalog takes the scale's record exactly. Nothing is written to the scale. Other scales that matched the old record may then show drift, and need their own settle.
 - take="catalog": the scale gets the catalog's record, is read back, and needs writes on for that scale. It reads the whole table, and refuses with duplicate_plu if the scale holds that PLU under another id. It refuses with plu_edit_held if it would change the PLU or Code on the scale, unless that record is a recorded orphan, which it then replaces with an orphan_replaced warning. That hold stays on purpose, because a settle could overwrite what a scale holds with nobody having asked for a PLU change. Only an edit that names the PLU changes one.
 
-A settle to the catalog that holds a price, PLU or Code changes what that scale sells, so check Square and the card, and tell the person. Where a row in scale_list_scales has catalog_took_it false, a settle to the catalog puts the old value back.
+A settle to the catalog that holds a price, PLU, Code, sold by or tax changes what that scale sells, so check Square and the card, and tell the person. Where a row in scale_list_scales has catalog_took_it false, a settle to the catalog puts the old value back.
 
 Then, once the person has seen differences, warnings and drift, call scale_apply_changes with the preview_id, acknowledge_drift set to drift_tokens_to_acknowledge (a settle gets a token even for different_product), and acknowledge_warnings true if must_acknowledge_warnings is true. This always names one scale, so it gives a scale_not_targeted warning, and the result is partial rather than success when other scales are configured.
 

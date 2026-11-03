@@ -105,7 +105,7 @@ For a new item or a price change that missed one scale, the box says "The newest
 
 Some boxes have no button. That is on purpose.
 
-- **"Did not answer. Tell Bart."** The scale gave no reply. Do not check it or change it. The item page takes away "Check the scales now" while this shows, because a check reads every scale.
+- **"Did not answer. Tell Bart."** The scale gave no reply. Do not check it or change it. While this shows, the page will not send any change to any scale, and a box for a delete or a PLU change has no Repeat button. "Check the scales now" still reads the other scales, and leaves that one out. If you try a change, the review says "Did not answer. Tell Bart." and nothing is sent.
 - **"Our list did not take it."** The change may be on that scale, and our list still has the old value. Check this scale, then call Bart. Putting our list on that scale would put the old value back.
 - **A count, such as "12 items have not been confirmed".** Many items missed that scale. Tell Bart. One check of that scale clears any that match.
 - **"The list of work not finished could not be built."** Do not take this as all clear. Tell Bart.
@@ -223,7 +223,7 @@ This means the scale stopped answering the page. It may have frozen. It can stil
 
 Nothing was changed on a scale that did not answer, unless the line for that scale says otherwise. Check the price on the scale display.
 
-For Bart: the reload command is in `docs/CLI.md`. Do not read the scale again until it has been checked.
+For Bart: the reload command is in `docs/CLI.md`. Do not read the scale again until it has been checked. Once you have looked at it, read it once to clear "Did not answer": ask Claude to compare that scale, or run the compare command for that one scale at the command line. `docs/CLI.md` has it. Then finish anything still listed, with a settle through Claude or `settle` at the command line. A reload clears it too.
 
 Never touch the scale's calibration or settings. ScaleConnect does not change them.
 

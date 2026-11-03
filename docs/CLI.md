@@ -86,6 +86,8 @@ A whole table read takes about 30 seconds at the default pace.
 
 If a read gets no reply, the message says the scale may have frozen and may need a reboot. Check the scale before trying again. A read has frozen scales with damaged or old records. A gap in the ids is suspected too, but not proven.
 
+While a logged change or reload says a scale gave no reply, and nothing has read it since, the web page sends nothing that would reach it, and says "Did not answer. Tell Bart." Once you have looked at the scale, `compare --scale NAME` reads it once. If it answers, that clears it. Then `settle` finishes anything still listed. A reload clears it too.
+
 ### reload
 
 **This overwrites ids 1 to N on that scale.** N is the highest id in the catalog, counting deleted items. Whatever the scale holds at those ids is replaced, whether or not it matches the catalog. It is for a person at the command line, and it is not on the web page or the MCP server.

@@ -172,12 +172,16 @@ A read can freeze a real scale. It then gives no reply and may drop off the netw
 
 The library sets a marker, `may_be_frozen`, on a scale that gave no reply. The server goes by the marker, and never by words in a `message`, so text in a record can neither say a scale is frozen nor hide it. When it is set:
 
-- `scales_may_be_frozen` names the scale, and the summary has the line `MAY BE FROZEN`.
+- `scales_may_be_frozen` names the scale, and the summary has the line `MAY BE FROZEN`. In `scale_list_scales` it covers logged changes and reloads only: a scale that gave no reply there, with no read of it saved since. A stall in a preview or a compare is not logged, so a new session cannot see it.
 - `next_step` says to stop reading and writing that scale, to tell the person it may need a reboot, and not to retry, not even a read.
 - A preview's `next_step` says not to apply it, because applying would read that scale again. A new preview must leave that scale out with `scales`, until the person says it has been checked.
 - The MCP error flag is set, even when the status alone would be quiet, such as `accepted_not_verified` after a read back that got no reply.
 
 The tools `scale_compare_scales`, `scale_read_items`, `scale_preview_changes`, `scale_preview_settle_drift` and `scale_preview_mark_orphan` all say a read can freeze a scale. So do the server instructions.
+
+**The web page while a scale may be frozen.** The page goes by the same list. It sends nothing that would reach that scale. "Check the scales now" reads the other scales only. Any review, send, repeat or settle is refused with "Did not answer. Tell Bart." A scale with reads and writes both off does not count, because the page would not reach it.
+
+**How Bart clears it.** First look at the scale, and reboot it if it needs that. Then read it once. Through Claude: say it has been checked, and ask for `scale_compare_scales` with `scales` set to that scale. At the command line: `compare --scale NAME`. A compare that answers clears the freeze flag. Rows that still differ stay, as ordinary misses, and a settle finishes each one, through Claude or with `settle` at the command line. A reload also clears it. Until a read of that scale is saved, the flag stays.
 
 ### What has not finished
 
@@ -185,13 +189,13 @@ The tools `scale_compare_scales`, `scale_read_items`, `scale_preview_changes`, `
 
 A row of kind `list_failed` means part of the catalog or its log could not be read, so the list could not be built. An empty list must never stand in for one nobody could make. The summary starts that line with `NOT KNOWN`, and `next_step` says not to read the list as all clear. What needs no log, such as an unfinished delete, is still listed beside it.
 
-`may_be_frozen` on a row means that scale gave no reply on a logged change, and that miss still stands. Every row on that scale carries it, since going back for any of them reads the same scale. It stays until a verified result ends that miss, even if a later read of the scale answers, because only a person can say the scale has been checked. The summary line says `MAY BE FROZEN`, `scales_may_be_frozen` names the scale, and `next_step` is the freeze rule, with no word of a settle. If other scales have rows too, the usual words follow for those.
+`may_be_frozen` on a row means that scale gave no reply on a logged change, and that miss still stands. Every row on that scale carries it, since going back for any of them reads the same scale. It stays until a verified result ends that miss, or until a read of that scale is saved after the change that got no reply. A read that answers shows the scale is back. Then the row stays as an ordinary miss until a read shows the catalog's record. The summary line says `MAY BE FROZEN`, `scales_may_be_frozen` names the scale, and `next_step` is the freeze rule, with no word of a settle. If other scales have rows too, the usual words follow for those.
 
 A `missed_change` is any other change a live item's scale may not hold, such as an add or a price edit that missed one scale:
 
 - **Listed:** a last result of `read_failed`, `unreachable`, `rejected`, `wrong_scale`, `drift_refused`, `not_sent` or `not_available`, if the catalog took the change. Nothing was sent, so the scale is behind only if the catalog moved. If every scale refused, the catalog did not move, so nothing is listed. Also listed: `unknown`, `mismatch` and `accepted_not_verified`, whether or not the catalog moved, because something went out and nobody has confirmed what the scale holds. If that change was a delete and the item is still in the catalog, the row's kind is `delete`, and its `repeat` is the delete.
 - **Also listed:** any row whose last record sent differs from the catalog in anything but the time, whatever its status, with those fields in `differs_in`. A `verified` result means the scale holds what was sent, and for an edit that is the scale's own record with only the asked for fields changed. So a later description edit can verify and leave a missed price behind. A settle that took one scale's record can leave the others behind. This needs a stored record. A row with none, or with one that cannot be read, says nothing here. A placeholder says nothing either.
-- **Not listed:** any row on a scale whose writes are off now, which is a person's choice. Once its writes are back on, a record that differs is listed, because that scale really is behind. A scale a change left out with `scales` is not listed for that alone. But if it has an earlier record that now differs from the catalog, it is listed, because that is true. Also not listed: an item already listed as a delete or a PLU change.
+- **Not listed:** a record that differs, from `differs_in` alone, on a scale whose writes are off now, which is a person's choice. Once its writes are back on, it is listed, because that scale really is behind. A missed change from the log is still listed on a scale with writes off, and keeps any freeze flag, until writes are back on and it ends. A scale a change left out with `scales` is not listed for that alone. But if it has an earlier record that now differs from the catalog, it is listed, because that is true. Also not listed: an item already listed as a delete or a PLU change.
 - **How it ends:** that scale ends `verified` for the item with the catalog's record, by a settle or a later change. Or a read of that scale, by compare, read or a preview, made after that change, shows what the catalog lists at that id. For a row from `differs_in`, the time does not need to match. A successful reload ends it too. A later refused change does not hide an earlier miss.
 - **`catalog_took_it`:** true if the catalog holds this change. False if only an edit with lost replies went out, so the catalog did not take it. Then that scale may hold the new value, and a settle to the catalog puts the old value back. To finish the change, make a new preview of it. That row's `repeat` is empty, so the undo is not offered as the way to finish. `change_id` finds what was asked. If the person wants the old value after all, a settle still does that, and its preview shows it.
 - **Its `repeat`:** `{"tool": "scale_preview_settle_drift", "scale": ..., "take": "catalog", "plu": ...}`. Call that tool with those arguments. Do not pass it to `scale_preview_changes`. The row also has `status` and `change_id`.
@@ -212,7 +216,7 @@ A change to the scales is not finished until the Square register and the printed
 - Do the scales first. If the result is anything but a full success, such as partial, unknown or failed, the person decides before Square changes. This stop wins over the skill's "do not stop per group". Read Square back after writing it.
 - A scale delete does not mean delete in Square. Square's delete cascades and cannot be undone. Ask the person, and do not make a new card for a deleted item.
 - Do not carry over test items, placeholders or anything the person says is a test.
-- A settle to the catalog that holds a price, PLU or Code changes what that scale sells, or if the scale held nothing there. So check Square and the card, and tell the person. A settle to the catalog can also put back an old value, when the catalog is stale or did not take a change. A settle to the scale can change the catalog, so check Square for that item and tell the person.
+- A settle to the catalog that holds a price, PLU, Code, sold by or tax changes what that scale sells, or if the scale held nothing there. So check Square and the card, and tell the person. A settle to the catalog can also put back an old value, when the catalog is stale or did not take a change. A settle to the scale can change the catalog, so check Square for that item and tell the person.
 - When a settle ends a miss whose catalog had moved, `next_step` says that if Square and the labels were waiting on this scale, they are next, so ask the person.
 
 A change result has `still_to_do`:
@@ -221,7 +225,7 @@ A change result has `still_to_do`:
 |---|---|
 | Full success with an add, edit or delete | `["square", "labels"]`. The headline says `SUCCESS. The scales are done.`, and `next_step` says Square and the labels are next. A delete's says never to delete in Square by default, and not to make a card. An add's or edit's has the test item rule |
 | A settle that took the scale's record | `["square"]`. It never says `Done.` |
-| A settle that took the catalog's record, with a price, PLU or Code in its fields, or onto a scale that held nothing there | `["square", "labels"]`, on any number of scales, even though other scales make the outcome partial |
+| A settle that took the catalog's record, with a price, PLU, Code, sold by or tax in its fields, or onto a scale that held nothing there | `["square", "labels"]`, on any number of scales, even though other scales make the outcome partial |
 | A settle that took the catalog's record and ended a miss whose catalog had moved | `["square", "labels"]` |
 | Any other settle that took the catalog's record | `[]` |
 | Partial, unknown or anything else that is not a full success | `[]`, because the person decides first. An empty list here does not mean finished, and `next_step` says Square and the labels are not done either |

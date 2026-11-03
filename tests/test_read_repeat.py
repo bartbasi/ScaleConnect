@@ -678,22 +678,54 @@ def test_a_second_read_with_no_close_keeps_may_be_frozen(make_fake, harness):
     assert fake.kinds().count("LP") == 2
 
 
-def test_other_bad_answers_do_not_use_the_close_answer(make_fake, harness):
-    """Only the order problem path reads it, so these stay plain failures as they always were."""
+def test_other_bad_answers_and_no_close_say_may_be_frozen_and_send_nothing_more(make_fake, harness):
+    """Round 6 N6: blank records came right before a real freeze, so any bad answer and no close raises the flag."""
     fake = load(make_fake())
     fake.raw_reply(JUNK, kind="Ok", times=None)
     fake.slow_to_close()
     h = harness(fake)
     r = h.client.read_items()
+    assert not r.ok and r.may_be_frozen and not r.repeated and NOT_CLOSED_WORDS in r.message and r.message.endswith(FROZEN_NOTE)
+    assert fake.kinds().count("LP") == 1 and h.waits == 0
+
+
+def test_other_bad_answers_and_a_close_stay_plain_failures(make_fake, harness):
+    fake = load(make_fake())
+    fake.raw_reply(JUNK, kind="Ok", times=None)
+    h = harness(fake)
+    r = h.client.read_items()
     assert not r.ok and not r.may_be_frozen and NOT_CLOSED_WORDS not in r.message and fake.kinds().count("LP") == 1
 
 
-def test_a_first_block_out_of_order_does_not_use_the_close_answer(make_fake, harness):
+def test_a_first_block_out_of_order_and_no_close_says_may_be_frozen(make_fake, harness):
     fake = load(make_fake())
     fake.raw_reply(read_block_bytes([row(3), row(1)]), kind="LP", times=None)
     fake.slow_to_close()
     r = harness(fake).client.read_items()
+    assert not r.ok and r.may_be_frozen and not r.repeated and NOT_CLOSED_WORDS in r.message
+    assert fake.kinds().count("LP") == 1
+
+
+@pytest.mark.parametrize("how", ["plain", "patient"])
+def test_a_read_back_with_a_bad_answer_and_no_close_says_may_be_frozen(make_fake, harness, how):
+    fake = load(make_fake())
+    fake.raw_reply(JUNK, kind="LP", times=None)
+    fake.slow_to_close(times=None)
+    h = harness(fake, read_repeat_enabled=False)
+    r = patient(h) if how == "patient" else h.client.read_items()
+    assert not r.ok and r.may_be_frozen and NOT_CLOSED_WORDS in r.message and fake.kinds().count("LP") == 1
+
+
+def test_after_a_bad_answer_a_close_up_to_eight_seconds_counts(make_fake, harness):
+    """Round 6 N5: a close at 2.5 seconds after a bad answer is a close, not a freeze. The reply timeout still caps it."""
+    fake = load(make_fake())
+    fake.resend_block_at_id(7)
+    fake.slow_to_close(2.5)
+    h = harness(fake, reply_timeout_seconds=9.0, read_repeat_enabled=False)
+    started = time.monotonic()
+    r = h.client.read_items()
     assert not r.ok and not r.may_be_frozen and NOT_CLOSED_WORDS not in r.message
+    assert 2.0 < time.monotonic() - started < 8.0 and fake.kinds().count("LP") == 1
 
 
 def test_nothing_else_cares_what_end_session_answers(make_fake, harness):
@@ -701,7 +733,7 @@ def test_nothing_else_cares_what_end_session_answers(make_fake, harness):
     fake = load(make_fake())
     h = harness(fake)
     real = h.client._end_session
-    h.client._end_session = lambda sock: real(sock) and False
+    h.client._end_session = lambda sock, **kw: real(sock, **kw) and False
     assert h.client.identify().ok
     assert h.client.read_items().ok
     early = h.client.read_items(10)
@@ -775,6 +807,12 @@ class TestEndSession:
         started = time.monotonic()
         assert self.client(60.0)._end_session(ours) is False
         assert 1.8 < time.monotonic() - started < 3.0
+
+    def test_after_a_bad_answer_the_wait_goes_past_two_seconds_up_to_the_reply_timeout(self, pair):
+        ours, _ = pair
+        started = time.monotonic()
+        assert self.client(3.0)._end_session(ours, after_bad_answer=True) is False
+        assert 2.8 < time.monotonic() - started < 4.5
 
     def test_a_reset_counts(self, pair):
         ours, theirs = pair

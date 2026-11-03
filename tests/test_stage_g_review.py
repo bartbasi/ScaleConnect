@@ -736,12 +736,12 @@ def test_L3_repeating_the_delete_needs_no_token(make_env):
 def test_L5_a_plu_edit_onto_a_plu_held_there_under_another_name_is_a_different_product(make_env):
     env = make_env({"A": True}, seed=seed_of(4))
     fake = env.fakes["A"]
-    fake.preload(row(Item(2, "2022", "2022", "Old Forest Salami", "30.00", timestamp=STAMP)))
-    edit = [{"action": "edit", "target_plu": "1002", "plu": "2022", "price": "12.00"}]
+    fake.preload(row(Item(2, "2777", "2777", "Made Up Sausage", "30.00", timestamp=STAMP)))
+    edit = [{"action": "edit", "target_plu": "1002", "plu": "2777", "price": "12.00"}]
     p = env.preview(edit, read_scales=True)
     assert [(d.kind, d.ack_token) for d in p.drift] == [("different_product", None)]
     rec = env.svc.apply_change(p.preview_id, True)
-    assert env.statuses(rec) == {"A": "drift_refused"} and fake.item(2)[3:5] == ("Old Forest Salami", "30.00")
+    assert env.statuses(rec) == {"A": "drift_refused"} and fake.item(2)[3:5] == ("Made Up Sausage", "30.00")
     assert env.catalog.get_by_id(2).plu == "1002"
 
 

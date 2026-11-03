@@ -908,6 +908,22 @@ class Catalog:
             })
         return out
 
+    def frozen_scale_results(self) -> list[tuple[str, str]]:
+        """(scale, at) for each logged scale result that says the scale gave no reply, oldest first.
+        The text filter only narrows the search. Each row is parsed, and one that cannot be is left out."""
+        out: list[tuple[str, str]] = []
+        for r in self._conn().execute(
+                "SELECT payload, at, scale FROM change_log WHERE event = 'scale_result' "
+                "AND (payload LIKE '%\"may_be_frozen\": true%' OR payload LIKE '%\"may_be_frozen\":true%') ORDER BY log_id"):
+            try:
+                payload = json.loads(r["payload"])
+            except ValueError:
+                continue
+            scale = payload.get("scale") if isinstance(payload, dict) else None
+            if isinstance(scale, str) and payload.get("may_be_frozen") is True and isinstance(r["at"], str):
+                out.append((scale, r["at"]))
+        return out
+
     def list_change_ids(self, limit: int = 50) -> list[str]:
         """Newest first, by when each change first appears in the log."""
         return [r[0] for r in self._conn().execute(

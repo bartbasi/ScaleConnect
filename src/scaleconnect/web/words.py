@@ -51,7 +51,7 @@ AFTER_TAKE_SCALE_NOTE = "Our list changed to match this scale. This page does no
 _SALE_ACTIONS = frozenset({"add", "edit", "delete"})
 _LANDED = frozenset({"verified", "accepted_not_verified"})
 _UNSETTLED = frozenset({"unknown", "mismatch"})
-_SELLING_FIELDS = frozenset({"price", "plu", "code"})
+_SELLING_FIELDS = frozenset({"price", "plu", "code", "fields_7_12"})  # fields 7 to 12 hold sold by and tax
 
 
 def after_success_note(actions: list[str], success: bool) -> str | None:
@@ -486,6 +486,33 @@ LIST_FAILED_TEXT = "The list of work not finished could not be built."
 LIST_FAILED_MORE = "Do not take this as all clear. Tell Bart."
 
 
+def frozen_more(names: list[str]) -> str:
+    where = _list_text(names)
+    return f"Do not check or change {where} until someone has looked at it."
+
+
+def frozen_refusal(names: list[str]) -> dict[str, Any]:
+    """The page refuses to read or send while a scale it would reach may be frozen. Bart clears it through Claude or the command line."""
+    where = _list_text(names)
+    return {
+        "code": "scale_may_be_frozen", "index": None, "field": None, "may_be_frozen": False, "scales": list(names),
+        "message": f"{DID_NOT_ANSWER} {where} did not answer earlier, so nothing was read or sent. {frozen_more(names)}",
+    }
+
+
+def frozen_scale_card(scale: str) -> dict[str, Any]:
+    """A scale that gave no reply on a change that left nothing unfinished, with no read since."""
+    return {"kind": "frozen_scale", "item_id": None, "plu": None, "scales": [scale], "old_plus": [], "repeat": {}, "target": None,
+            "stopping": [], "rolled_up": False, "no_fix": True, "button": None,
+            "text": f"{scale} did not answer during an earlier change, and nothing has read it since.", "more": f"{DID_NOT_ANSWER} {frozen_more([scale])}"}
+
+
+def frozen_read_row(scale: str) -> dict[str, Any]:
+    """A scale a check left out, because it did not answer earlier."""
+    return {"scale": scale, "status": "not_contacted", "severity": BAD, "may_be_frozen": False,
+            "text": f"{scale}: {DID_NOT_ANSWER} It was not read now. {frozen_more([scale])}"}
+
+
 def _plu_phrase(plu: Any) -> str:
     return f"PLU {plu}" if _FOUR_DIGITS.fullmatch(str(plu)) else "an item"
 
@@ -593,9 +620,11 @@ def unfinished_cards(work: list[Any]) -> list[dict[str, Any]]:
             missed.setdefault(u.scale, {}).setdefault(_missed_kind(u), []).append(u)
             continue
         card = groups.setdefault((u.kind, u.item_id, u.repeat.get("plu"), u.repeat.get("scale")), {
-            "kind": u.kind, "item_id": u.item_id, "plu": u.plu, "scales": [], "old_plus": [], "repeat": dict(u.repeat),
+            "kind": u.kind, "item_id": u.item_id, "plu": u.plu, "scales": [], "old_plus": [], "repeat": dict(u.repeat), "frozen": [],
         })
         card["scales"].append(u.scale)
+        if getattr(u, "may_be_frozen", False) is True:
+            card["frozen"].append(u.scale)
         for old in u.old_plus:
             if old not in card["old_plus"]:
                 card["old_plus"].append(old)
@@ -621,6 +650,12 @@ def unfinished_cards(work: list[Any]) -> list[dict[str, Any]]:
                 card["more"] = (f"Our list still says {card['plu']}. {where} may be on {target} or on {card['plu']}, "
                                 "and both may work there until this is finished. Look at the scale.")
             card["button"] = f"Repeat the PLU change to {target}"
+        frozen = card.pop("frozen")
+        card["no_fix"] = bool(frozen)
+        if frozen:
+            # A repeat reads every scale it names, and one of them did not answer.
+            card["button"] = None
+            card["more"] = f"{DID_NOT_ANSWER} {frozen_more(frozen)}"
         cards.append(card)
     for scale, kinds in missed.items():
         for kind, rows in kinds.items():

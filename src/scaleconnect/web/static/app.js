@@ -321,9 +321,9 @@
       if (my !== routeToken) { return; }
       var it = d.item;
       var rows = d.scales.map(function (s) {
-        var bad = s.flag === 'different' || s.flag === 'different_product' || s.flag === 'missing' || s.flag === 'unfinished';
+        var bad = s.flag === 'different' || s.flag === 'different_product' || s.flag === 'missing' || s.flag === 'unfinished' || s.flag === 'frozen';
         var cls = s.flag === 'same' ? 'ok' : (bad ? 'bad' : (s.flag === 'unsure' ? 'warn' : ''));
-        var tag = s.flag === 'same' ? 'Matches' : (s.flag === 'unfinished' ? 'Not finished' : (s.flag === 'different_product' ? 'Different product' : (bad ? 'Different' : (s.flag === 'unsure' ? 'Not sure' : 'Unknown'))));
+        var tag = s.flag === 'same' ? 'Matches' : (s.flag === 'frozen' ? 'Did not answer' : (s.flag === 'unfinished' ? 'Not finished' : (s.flag === 'different_product' ? 'Different product' : (bad ? 'Different' : (s.flag === 'unsure' ? 'Not sure' : 'Unknown')))));
         var more = s.last_read ? 'Last read: PLU ' + s.last_read.plu + ', ' + s.last_read.description + ', ' + money(s.last_read.price) +
           (s.last_read_at ? ' (' + fmtTime(s.last_read_at) + ')' : '') : null;
         var extra = s.can_change ? null : 'Changes are turned off for this scale.';
@@ -341,17 +341,22 @@
         }
         return box1;
       });
-      /* A check reads every scale, and one that did not answer must not be read again until someone has looked at it. */
-      var stuck = d.scales.some(function (s) { return s.missed && s.missed.kind === 'frozen'; });
+      /* A scale that did not answer must not be read again until someone has looked at it. The server leaves it out
+         of a check, and refuses any review or send while it may be frozen. This only says so before anyone taps. */
+      var frozen = d.frozen_scales || [];
+      var stuck = frozen.length ? box('bad', 'Did not answer', 'Did not answer. Tell Bart.',
+        frozen.join(', ') + ' did not answer earlier. This page will not check or change ' + frozen.join(', ') +
+        ', and no change can be sent to any scale, until Bart has looked at it.') : null;
       var nodes = [
         h('p', { class: 'small' }, h('a', { href: '#/', text: 'Back to search' })),
         h('div', { class: 'box' }, h('div', { class: 'big', text: it.plu }), h('div', { class: 'line', text: it.description }),
           h('div', { class: 'big', text: money(it.price) })),
+        stuck,
         S.caps.edit ? link('#/edit/' + encodeURIComponent(it.plu), 'Change this item') : null,
         readProblems(checked),
         h('h2', { text: 'On the scales' }), rows,
         h('div', { id: 'checkmsg' }),
-        stuck ? h('p', { class: 'plain', text: 'A check reads every scale, and one did not answer. Tell Bart.' }) :
+        frozen.length ? h('p', { class: 'small', text: 'A check reads the other scales only.' }) : null,
         h('button', { class: 'btn second', type: 'button', text: 'Check the scales now', onclick: function () {
           var m = document.getElementById('checkmsg'); clear(m);
           m.appendChild(box('working', 'Working', 'Reading the scales. This can take a minute.'));
@@ -578,7 +583,8 @@
       if (!pv.ok) {
         holder.appendChild(box('bad', 'Problem', 'This cannot be sent yet.'));
         pv.errors.forEach(function (e) { holder.appendChild(box('bad', null, e.may_be_frozen ? REBOOT : e.message, e.may_be_frozen ? e.message : null)); });
-        if (draft.repeat) { holder.appendChild(box('warn', null, 'This repeat is out of date.', 'The work may already be finished, or the item may have changed. Nothing was sent.')); }
+        var frozenRefusal = pv.errors.some(function (e) { return e.code === 'scale_may_be_frozen'; });
+        if (draft.repeat && !frozenRefusal) { holder.appendChild(box('warn', null, 'This repeat is out of date.', 'The work may already be finished, or the item may have changed. Nothing was sent.')); }
         if (pv.repeat) {
           /* Settling cannot finish a PLU change. The repeat can. */
           holder.appendChild(h('button', { class: 'btn', type: 'button', text: 'Repeat the PLU change', onclick: function () {

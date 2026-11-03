@@ -2742,7 +2742,7 @@ class ScaleConnectService:
             scales_of.setdefault(item_id, set()).add(scale)
         changes = self._changes_in_log(self._catalog.scale_results_in_log(), set(scales_of))
         pending: dict[tuple[str, int], dict[str, Any]] = {}
-        frozen: set[tuple[str, int]] = set()
+        frozen_at: dict[tuple[str, int], str] = {}
         logged: set[tuple[str, int]] = set()
         for change_id, items in changes.items():
             for item_id, entry in items.items():
@@ -2754,20 +2754,66 @@ class ScaleConnectService:
                     own = entry["statuses"].get(scale)
                     if action == "add" and moved:
                         pending.pop(key, None)  # a new item on this id, so older misses are about something else
-                        frozen.discard(key)
+                        frozen_at.pop(key, None)
                     if own == ScaleStatus.VERIFIED.value:
                         pending.pop(key, None)
-                        frozen.discard(key)
+                        frozen_at.pop(key, None)
                     elif own in _MISSED_MAY_HOLD or (own in _MISSED_NOT_SENT and moved):
                         # Only an edit can leave a scale ahead of the catalog. A settle or a reload is the catalog's own record.
                         pending[key] = {"action": action, "status": own, "change_id": change_id, "at": entry["ats"][scale], "took": action != "edit" or moved}
                     if entry["frozen"].get(scale):
-                        frozen.add(key)
+                        frozen_at[key] = entry["ats"][scale]
         for r in rows:
             # The row's change is not in the log, so the row is all there is. It says this scale was not confirmed.
             if (r["change_id"], r["item_id"]) not in logged:
                 pending.setdefault((r["scale"], r["item_id"]), {"action": None, "status": r["status"], "change_id": r["change_id"], "at": r["at"], "took": True})
+        # A read of that scale saved after the silence means it answered since, so the silence is old news.
+        # The miss itself stays until a read shows the catalog's record. Only the freeze words go.
+        newest: dict[str, str | None] = {}
+        frozen = {key for key, at in frozen_at.items() if not self._read_of_scale_since(key[0], at, newest)}
         return pending, frozen
+
+    def _read_of_scale_since(self, scale: str, since: str | None, cache: dict[str, str | None] | None = None) -> bool:
+        """A read of this scale was saved after that moment, so it answered then. Times are to the second,
+        so a read in the same second does not count. Reads no scale. A catalog that cannot say counts as no."""
+        cache = {} if cache is None else cache
+        if scale not in cache:
+            try:
+                cache[scale] = max((r["at"] for r in self._catalog.last_reads_for_scale(scale).values()), default=None)
+            except Exception:
+                cache[scale] = None
+        newest = cache[scale]
+        try:
+            return newest is not None and datetime.fromisoformat(newest) > datetime.fromisoformat(since or "")
+        except (TypeError, ValueError):
+            return False
+
+    def scales_may_be_frozen(self, unfinished: Sequence[UnfinishedWork] | None = None) -> list[str]:
+        """Scales that gave no reply on a logged change or reload, with no read of them saved since. Reads no scale.
+
+        This covers more than the frozen rows in list_unfinished: a one scale change that moved nothing,
+        and a reload, leave no row. It cannot see a stall in a preview or a compare, which is not logged.
+        A log that cannot be read gives what the rows say, and no more.
+        """
+        work = self.list_unfinished() if unfinished is None else unfinished
+        names = {u.scale for u in work if u.may_be_frozen}
+        newest: dict[str, str | None] = {}
+        try:
+            events = self._catalog.frozen_scale_results()
+        except Exception:
+            events = []
+        last: dict[str, str] = {}
+        for scale, at in events:
+            try:
+                if scale not in last or datetime.fromisoformat(at) > datetime.fromisoformat(last[scale]):
+                    last[scale] = at
+            except (TypeError, ValueError):
+                continue
+        for scale, at in last.items():
+            if not self._read_of_scale_since(scale, at, newest):
+                names.add(scale)
+        order = [s.name for s in self._config.scales]
+        return [name for name in order if name in names]
 
     def settle_ended_a_miss(self, record: ChangeRecord) -> bool:
         """A settle that put the catalog's record on a scale, where an earlier change had moved the catalog
@@ -2972,6 +3018,7 @@ class ScaleConnectService:
             attempts=attempts,
             items=tuple(ItemResult(r.id, r.plu, _RELOAD, statuses.get(r.id, ITEM_NOT_SENT)) for r in records),
             replies=replies,
+            may_be_frozen=result.may_be_frozen is True,
         )
         finished_at = self._now_text()
         outcome, summary, _ = self._outcome([scale_result], not_touched, problems)

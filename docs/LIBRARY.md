@@ -150,7 +150,7 @@ A real fill gives the warning `gap_filled`, which needs acknowledging. So does a
 
 ### A scale that may be frozen
 
-`may_be_frozen` is true on a result where a scale gave no reply, or sent blocks out of order and then did not close when we hung up. It is on `ScaleResult`, `ScaleRead`, `ScaleComparison`, `OrphanMarks`, `ReloadResult`, `PreviewWarning` (`scale_read_failed`) and `PreviewError` (`settle_read_failed`). Do not read that scale again until a person has checked it and rebooted it if needed, because a table that froze it can freeze it again. Use the field, and do not match the words.
+`may_be_frozen` is true on a result where a scale gave no reply, or answered a read badly in any way and then did not close when we hung up. It is on `ScaleResult`, `ScaleRead`, `ScaleComparison`, `OrphanMarks`, `ReloadResult`, `PreviewWarning` (`scale_read_failed`) and `PreviewError` (`settle_read_failed`). Do not read that scale again until a person has checked it and rebooted it if needed, because a table that froze it can freeze it again. Use the field, and do not match the words.
 
 ### When a read goes wrong
 
@@ -161,12 +161,13 @@ With it on, a read starts once more from id 1, after `read_repeat_wait_seconds`,
 - A block failed the order check, with at least one good block before it.
 - The ids in that block are from 1 to 500.
 - It came on the first `LP` of this read call. An `LP` that was dropped and tried again rules out a repeat.
-- The scale closed its side when we hung up. It may send more bytes first, and those are thrown away. It has about 2 seconds, or the reply wait if that is shorter.
+- The scale closed its side when we hung up. It may send more bytes first, and those are thrown away. It has up to 8 seconds, or the reply wait if that is shorter.
 
 At most one repeat per read call. It never skips or accepts a bad block.
 
-- **No repeat, a plain failure.** A record not in the expected form, a reply that is no read block, a bad check character, a block too long, an id above 500, or a first block out of order. Blank records came right before a real freeze, so these never send a second `LP`. See `docs/PROTOCOL.md` section 3.
-- **No repeat, and it may be frozen.** Silence, a dropped connection, a failed connect, or blocks out of order on a scale that did not close when we hung up. In that last case `may_be_frozen` is true with the setting on or off, and the message adds `The scale did not close the connection after we hung up.` and the frozen note.
+- **No repeat, a plain failure.** A record not in the expected form, a reply that is no read block, a bad check character, a block too long, an id above 500, or a first block out of order, on a scale that closed when we hung up. Blank records came right before a real freeze, so these never send a second `LP`. See `docs/PROTOCOL.md` section 3.
+- **No repeat, and it may be frozen.** Silence, a dropped connection, a failed connect, or any bad answer above, or blocks out of order, on a scale that did not close when we hung up. In that last case `may_be_frozen` is true with the setting on or off, and the message adds `The scale did not close the connection after we hung up.` and the frozen note. After a bad answer the scale has up to 8 seconds to close, or the reply wait if that is shorter. After a clean stop it has 2.
+- **With the setting off, a read back gets no second try either.** Before round 6, a read back that got a bad answer kept trying through its window. Now a scale that answers badly once after a write ends `accepted_not_verified`, and is read once.
 - **In the repeat, one try at `LP`.** If it is dropped or gets no reply, the read stops with `may_be_frozen`. Only a refused connect is tried again, because no message went out and the scale answered. A connect that gets no answer stops it too.
 - If the repeat works, the read succeeds. `ReadResult.repeated` is true and `first_problem` says why. Both stay unset if no repeat was tried.
 - If it fails too, the message names both reasons, and `may_be_frozen` comes from the second read. `repeated` is true here even if every connect was refused and no second `LP` went out.
@@ -579,7 +580,7 @@ The preview is used up and the start logged in one transaction. So `get_change_f
 3. Marks the preview used, and logs that the change started.
 4. For each targeted scale, one at a time, in config order. It logs each result as it comes, and a failure moves on to the next scale:
    1. **Identity.** Sends `CX`. A wrong serial sends nothing else.
-   2. **Read.** Sends `LP` and reads the whole table, once, or twice if the scale answered badly. See "When a read goes wrong". Any write must find its PLU under any other id, and know where the table ends.
+   2. **Read.** Sends `LP` and reads the whole table, once. It reads twice only with `read_repeat_enabled` on, and only after blocks out of order on a scale that then closed. See "When a read goes wrong". Any write must find its PLU under any other id, and know where the table ends.
    3. **Compare.** A different product, a duplicate PLU, an occupied id, a read that ended early, a fill nobody saw, or field drift nobody acknowledged refuses this whole scale.
    4. **Build.** The scale's own record with only the requested fields, plus one new timestamp. A record that fails validation is refused here.
    5. **Write.** `RI`, `bX01XX`, `GP` batches, `GPF0`. Each waits for the last reply, and each batch's reply is checked.

@@ -307,12 +307,22 @@ def create_app(
         limit = max(1, min(limit, 100))
         return {"items": [words.item_card(i) for i in service.search_items(q.strip()[:100], limit=limit)]}
 
+    def frozen_scales(unfinished: Any = None, among: Any = None) -> list[str]:
+        """Scales this page would reach that may be frozen, from the catalog and its log, with no scale contact.
+        The page reads and sends nothing to them, nor anything that would reach them. Bart clears it through
+        Claude or the command line: a compare of that scale that answers, or a reload."""
+        reached = [s.name for s in service.list_scales() if s.read_enabled]
+        names = set(service.scales_may_be_frozen(unfinished))
+        wanted = set(among) if among else set(reached)
+        return [n for n in reached if n in names and n in wanted]
+
     @app.get("/api/item/{plu}")
     def item(plu: str):
         view = service.get_item(plu=plu)
         shown = view.item
         # From the catalog, with no scale contact. A scale behind a PLU change must be finished, never settled.
         unfinished_now = service.list_unfinished()
+        frozen_now = frozen_scales(unfinished_now)
         behind = {(u.scale, u.item_id): u for u in unfinished_now if u.kind == "plu_change"}
         missed = {(u.scale, u.item_id): u for u in unfinished_now if u.kind == "missed_change"}
         rows = []
@@ -379,6 +389,12 @@ def create_app(
                     if row["flag"] in ("none", "same", "unsure") or not read_since:
                         row.update(flag="unsure", text=f"{said['text']} Look at the scale.")
                     row.update(can_fix=row["can_fix"] or info.write_enabled)
+            if info.name in frozen_now:
+                # Every button on this row would read that scale, so none is offered, of any kind.
+                stop = f"{words.DID_NOT_ANSWER} {words.frozen_more([info.name])}"
+                row.update(flag="frozen", can_fix=False, repeat=None, repeat_meta=None, text=stop)
+                if row["missed"] is not None:
+                    row["missed"] = {**row["missed"], "kind": "frozen", "stop_text": stop, "text": ""}
             rows.append(row)
         interrupted = []
         for change_id in view.interrupted_change_ids:
@@ -392,6 +408,7 @@ def create_app(
             "scales": rows,
             "interrupted": interrupted,
             "sending_now": jobs.busy(),
+            "frozen_scales": frozen_now,
         }
 
     # ------------------------------------------------------------ preview
@@ -438,6 +455,10 @@ def create_app(
         if problem:
             return problem
         changes, problems = _clean_changes(body.changes)
+        frozen = frozen_scales()
+        if frozen and not problems:
+            # A review reads every scale, and a send writes to them. One did not answer, so neither happens from here.
+            problems = [words.frozen_refusal(frozen)]
         if problems:
             return {
                 "ok": False, "preview_id": None, "created_at": None, "expires_at": None, "requested_by": "web",
@@ -454,6 +475,13 @@ def create_app(
         problem = change_guard(request)
         if problem:
             return problem
+        frozen = frozen_scales(among=[body.scale])
+        if frozen:
+            return {
+                "ok": False, "preview_id": None, "created_at": None, "expires_at": None, "requested_by": "web",
+                "scales": [], "differences": [], "warnings": [], "errors": [words.frozen_refusal(frozen)], "drift": [],
+                "scales_read": [], "repeat": None,
+            }
         result = service.preview_settle_drift(scale=body.scale, take=body.take, plu=body.plu, requested_by="web")
         data = result.to_dict()
         behind = [d for d in data.get("drift", []) if words.is_unfinished_move(d)]
@@ -471,8 +499,13 @@ def create_app(
 
     @app.get("/api/unfinished")
     def unfinished_work():
-        """Changes some scale has not confirmed. From the catalog and its log, no scale contact."""
-        return {"items": words.unfinished_cards(service.list_unfinished())}
+        """Changes some scale has not confirmed. From the catalog and its log, no scale contact.
+        A scale that may be frozen with no row of its own still gets a card, so staff hear it before they try a change."""
+        work = service.list_unfinished()
+        cards = words.unfinished_cards(work)
+        in_rows = {u.scale for u in work if u.may_be_frozen}
+        cards.extend(words.frozen_scale_card(name) for name in frozen_scales(work) if name not in in_rows)
+        return {"items": cards}
 
     @app.post("/api/check")
     def check(body: CheckBody, request: Request):
@@ -480,9 +513,14 @@ def create_app(
         problem = change_guard(request)
         if problem:
             return problem
-        reads = service.read_scale_items(plus=[body.plu])
+        frozen = frozen_scales()
+        # A scale that did not answer earlier is left out, and only the others are read.
+        others = [s.name for s in service.list_scales() if s.name not in frozen]
+        reads = service.read_scale_items(plus=[body.plu], scales=others) if others else []
         # No raw messages: they can hold scale details. Staff get plain words, and a reboot flag.
-        return {"scales": [words.read_row(r.scale, r.status, r.may_be_frozen) for r in reads]}
+        rows = {r.scale: words.read_row(r.scale, r.status, r.may_be_frozen) for r in reads}
+        rows.update({name: words.frozen_read_row(name) for name in frozen})
+        return {"scales": [rows[s.name] for s in service.list_scales() if s.name in rows]}
 
     @app.post("/api/orphan")
     def mark_orphan(body: OrphanBody, request: Request):
@@ -513,6 +551,10 @@ def create_app(
         if problem:
             return problem
         known = previews.get(body.preview_id) or {"scales": (), "blocked": set()}
+        frozen = frozen_scales(among=known["scales"])
+        if frozen and jobs.get(body.preview_id) is None:
+            # A review made before that scale stopped answering. Sending would read it before writing.
+            return _error(409, "scale_may_be_frozen", words.frozen_refusal(frozen)["message"], sent=False)
         # A scale that holds a different product is never forced from here, whatever the page sent.
         tokens = [t for t in body.acknowledge_drift if t not in known["blocked"]]
         try:
