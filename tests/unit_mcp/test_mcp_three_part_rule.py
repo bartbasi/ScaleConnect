@@ -419,7 +419,17 @@ def test_an_add_or_edit_carries_the_test_item_rule_and_names_the_rules_tool(make
     data = session.apply(session.preview(changes))
     assert "Do not carry over test items, placeholders or anything the person says is a test." in data["next_step"]
     assert "scale_square_rules" in data["next_step"] and "server instructions" not in data["next_step"]
-    assert "make the case card" in data["next_step"]
+    assert "ask the person about the case card, which is made in Claude chat, not here" in data["next_step"]
+
+
+def test_the_labels_rule_hands_cards_to_claude_chat():
+    """Claude Code on bartcc cannot build the card sheet, so the rule asks first and hands a request to Claude chat."""
+    labels = server_module._SQUARE_RULES["labels"]
+    assert "built in Claude chat with the skill, not here" in labels
+    assert "Do not try to build one" in labels
+    assert "ask the person whether the item needs a new card" in labels
+    assert "request to paste into Claude chat: the code, the name, the price, the unit and what changed" in labels
+    assert "Make a new card" not in labels
 
 
 def test_a_delete_carries_the_square_rule_and_is_not_told_to_make_a_card(make_env):

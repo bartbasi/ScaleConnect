@@ -298,8 +298,11 @@ _SQUARE_RULES = {
     "plu_changes": "A PLU change also changes the code at the end of the Square name, possibly its UPC, and the code on the card.",
     "test_items": "Do not carry over test items, placeholders or anything the person says is a test.",
     "labels": (
-        "The labels are the case cards made with the skill. Make a new card for a changed price, description or code. Its verify before "
-        "printing list goes to the person."
+        "The labels are the case cards. They are built in Claude chat with the skill, not here, because building the sheet needs software "
+        "this computer does not have. Do not try to build one. After the scales and Square, ask the person whether the item needs a new "
+        "card. A changed price, description or code usually does, but the person may have one already. If they want one, give them a short "
+        "request to paste into Claude chat: the code, the name, the price, the unit and what changed. Claude chat's verify before printing "
+        "list goes to the person from there. Labels are done when the person says the card is handled or not needed."
     ),
     "settles": (
         "A settle only brings one scale to match the catalog, or the catalog to match a scale. One that takes the catalog's record changes "
@@ -705,7 +708,8 @@ _TEST_ITEM_RULE = "Do not carry over test items, placeholders or anything the pe
 _DELETE_RULE = "A scale delete does not mean delete in Square, never delete there by default."
 _SQUARE_AND_LABELS_NEXT_STEP = (
     "The scales are done, and Square and the labels are next. Call scale_square_rules first. If the person has said yes to "
-    "the exact Square change, make it and read it back. If not, show it to them and ask. Then make the case card. Do not say "
+    "the exact Square change, make it and read it back. If not, show it to them and ask. Then ask the person about the case card, which "
+    "is made in Claude chat, not here. Do not say "
     f"done until all three are done, or the person says to skip one. {_TEST_ITEM_RULE}"
 )
 _DELETE_SQUARE_NEXT_STEP = (

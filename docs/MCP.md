@@ -214,7 +214,7 @@ For a delete or PLU change, `repeat` is the change that finishes it. A delete's 
 
 ### Scales, Square and labels
 
-A change to the scales is not finished until the Square register and the printed labels match. This server does not reach Square or print labels. Claude does both, through its own Square connector and the `anthropic-skills:cc-case-cards` skill. The tool `scale_square_rules` holds the full rule, and contacts nothing. In short:
+A change to the scales is not finished until the Square register and the printed labels match. This server does not reach Square or print labels. Claude changes Square through its own Square connector. The labels are the case cards, and they are built in Claude chat with the `anthropic-skills:cc-case-cards` skill, because the sheet builder needs software that bartcc does not have. So Claude Code asks the person whether a card is needed, and if so gives them a short request to paste into Claude chat. The tool `scale_square_rules` holds the full rule, and contacts nothing. In short:
 
 - Report scales, Square and labels separately. Say done only when all three are done, or the person has said to skip one. `success` still means only that every scale is verified.
 - Before applying, read the Square item, and show one preview of the scale change and the exact Square before and after. A yes to a preview that did not show the Square change is not a yes for Square.
@@ -356,7 +356,7 @@ SCALE2: verified. Confirmed. The scale said Ok, and reading it back matched ever
 Found before writing on SCALE2 at id 7: differs in price 12.00 on the scale and 12.50 expected.
 SCALE3: verified. Confirmed. The scale said Ok, and reading it back matched every field.
 Batch of 3 records: 3 verified on every configured scale, 0 not.
-Next: Every configured scale confirmed this by reading it back. The scales are done, and Square and the labels are next. Call scale_square_rules first. If the person has said yes to the exact Square change, make it and read it back. If not, show it to them and ask. Then make the case card. Do not say done until all three are done, or the person says to skip one. Do not carry over test items, placeholders or anything the person says is a test.
+Next: Every configured scale confirmed this by reading it back. The scales are done, and Square and the labels are next. Call scale_square_rules first. If the person has said yes to the exact Square change, make it and read it back. If not, show it to them and ask. Then ask the person about the case card, which is made in Claude chat, not here. Do not say done until all three are done, or the person says to skip one. Do not carry over test items, placeholders or anything the person says is a test.
 ```
 
 If SCALE3 has writes off and SCALE2 said Error, it reads like this instead, and Claude says so plainly:
