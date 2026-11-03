@@ -20,13 +20,13 @@ EDIT1 = [{"action": "edit", "target_plu": "1001", "price": "11.00"}]
 
 
 def test_left_out_words_follow_how_each_scale_stopped():
-    assert words.left_out_text(["B"]) == "B is left out. It did not answer last time. Tell Bart."
-    assert words.left_out_text(["B"], {"B": "unreachable"}) == "B is left out. We could not connect to it last time. Tell Bart."
-    assert words.left_out_text(["B", "C"]) == "B and C are left out. They did not answer last time. Tell Bart."
+    assert words.left_out_text(["B"]) == "B is left out. It did not answer last time. Tell the Scale Manager."
+    assert words.left_out_text(["B"], {"B": "unreachable"}) == "B is left out. We could not connect to it last time. Tell the Scale Manager."
+    assert words.left_out_text(["B", "C"]) == "B and C are left out. They did not answer last time. Tell the Scale Manager."
     assert words.left_out_text(["B", "C"], {"C": "unreachable"}) == (
-        "B and C are left out. B did not answer last time. We could not connect to C last time. Tell Bart."
+        "B and C are left out. B did not answer last time. We could not connect to C last time. Tell the Scale Manager."
     )
-    assert words.left_out_review_text("unreachable") == "Left out. We could not connect to it last time. Nothing is read or sent to it. Tell Bart."
+    assert words.left_out_review_text("unreachable") == "Left out. We could not connect to it last time. Nothing is read or sent to it. Tell the Scale Manager."
 
 
 def test_refusals_and_rows_say_could_not_connect_for_a_failed_connect():
@@ -39,7 +39,7 @@ def test_refusals_and_rows_say_could_not_connect_for_a_failed_connect():
     assert words.read_row("B", "read_failed", True)["reboot"] == words.REBOOT_LINE
     assert words.scale_row(ScaleResult("B", "unreachable", "x", may_be_frozen=True))["reboot"] == words.REBOOT_NO_CONNECT
     left = ScaleResult("B", "not_available", "x", items=(ItemResult(1, "1001", "edit", "not_sent"),))
-    assert words.scale_row(left, "unreachable")["text"] == "B: left out. We could not connect to it last time, so nothing was sent to it. Tell Bart."
+    assert words.scale_row(left, "unreachable")["text"] == "B: left out. We could not connect to it last time, so nothing was sent to it. Tell the Scale Manager."
     assert words.REBOOT_NO_CONNECT in SCRIPT, "the page script tells the two apart"
 
 
@@ -50,7 +50,7 @@ def test_the_page_script_uses_the_servers_words_for_a_failed_connect():
 
 
 def test_staff_guide_covers_a_failed_connect_and_says_not_to_retry():
-    assert "If the line below says it did not answer, or could not connect, do not try again. Tell Bart." in STAFF
+    assert "If the line below says it did not answer, or could not connect, do not try again. Tell the Scale Manager." in STAFF
     assert "| Left out. We could not connect to it last time, so nothing was sent to it. |" in STAFF
 
 
@@ -62,7 +62,7 @@ def test_a_review_after_a_failed_connect_says_could_not_connect(make_web):
     web.env.fakes["B"].start_listening()
     assert rows["B"]["reboot"] == words.REBOOT_NO_CONNECT
     p = web.preview(EDIT1, read=True).json()
-    assert p["left_out_text"] == "B is left out. We could not connect to it last time. Tell Bart."
+    assert p["left_out_text"] == "B is left out. We could not connect to it last time. Tell the Scale Manager."
     assert p["left_out_rows"] == {"B": words.left_out_review_text("unreachable")}
     assert web.send(p["preview_id"], warnings=True).status_code == 200
     done = web.wait_finished(p["preview_id"])

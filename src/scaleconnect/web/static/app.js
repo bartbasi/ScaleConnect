@@ -7,8 +7,8 @@
   var app = document.getElementById('app');
   var S = { signedIn: false, csrf: null, caps: { add: true, edit: true, delete: false, notes: {} }, scales: [],
             descMax: 35, pluEdit: false, busy: false, deleteNote: '', configNotice: null };
-  var REBOOT = 'The scale did not answer. It may need a reboot. Tell Bart.';
-  var NO_CONNECT_WORDS = 'Could not connect to the scale. It may be off the WiFi, or frozen. Tell Bart.';
+  var REBOOT = 'The scale did not answer. It may need a reboot. Tell the Scale Manager.';
+  var NO_CONNECT_WORDS = 'Could not connect to the scale. It may be off the WiFi, or frozen. Tell the Scale Manager.';
   var routeToken = 0;
   var timer = null;
   var kick = null;
@@ -354,7 +354,7 @@
       var why = (noAnswer.length ? noAnswer.join(', ') + ' did not answer earlier. ' : '') +
         (noConnect.length ? noConnect.join(', ') + ' could not be reached earlier. It may be off the WiFi, or it may be frozen. ' : '');
       var stuck = frozen.length ? box('bad', noAnswer.length ? 'Did not answer' : 'Could not connect',
-        noAnswer.length ? 'Did not answer. Tell Bart.' : 'Could not connect. Tell Bart.',
+        noAnswer.length ? 'Did not answer. Tell the Scale Manager.' : 'Could not connect. Tell the Scale Manager.',
         why + 'This page will not check or change ' + frozen.join(', ') +
         ' until Bart has looked at it. A change goes to the other scales only.') : null;
       var nodes = [
@@ -608,7 +608,7 @@
       var leftOut = pv.left_out || [];
       /* A scale that did not answer earlier is left out. Said first, before anything else on the review. */
       if (leftOut.length) {
-        holder.appendChild(box('bad', 'Left out', pv.left_out_text || ('Left out: ' + leftOut.join(', ') + '. Tell Bart.'),
+        holder.appendChild(box('bad', 'Left out', pv.left_out_text || ('Left out: ' + leftOut.join(', ') + '. Tell the Scale Manager.'),
           'This change goes to the other scales only.'));
       }
       /* A repeat is about one item, named by its PLU. If the review shows another item, nothing may be sent. */
@@ -677,7 +677,7 @@
         var named = pv.warnings.filter(function (w) { return (w.scales_named || []).indexOf(name) >= 0; });
         if (checking) { line = 'Checking'; cls = 'working'; }
         else if (mine.length) { line = 'Different from our list'; cls = 'bad'; }
-        else if (named.some(function (w) { return w.may_be_frozen; })) { line = named.some(function (w) { return w.may_be_frozen && w.reboot !== NO_CONNECT_WORDS; }) ? 'Did not answer. Do not send. Tell Bart.' : 'Could not connect. Do not send. Tell Bart.'; cls = 'bad'; }
+        else if (named.some(function (w) { return w.may_be_frozen; })) { line = named.some(function (w) { return w.may_be_frozen && w.reboot !== NO_CONNECT_WORDS; }) ? 'Did not answer. Do not send. Tell the Scale Manager.' : 'Could not connect. Do not send. Tell the Scale Manager.'; cls = 'bad'; }
         else if (named.length) { line = 'Read the note above.'; cls = 'warn'; }
         else if (read && rep && rep.kind === 'plu_change') { line = 'Checked. The repeat is sent to this scale.'; cls = 'ok'; }
         else if (read) { line = 'Checked. Nothing is different.'; cls = 'ok'; }
@@ -685,7 +685,7 @@
         holder.appendChild(box(cls, name, line));
       });
       leftOut.forEach(function (name) {
-        holder.appendChild(box('bad', name, (pv.left_out_rows || {})[name] || 'Left out. Nothing is read or sent to it. Tell Bart.'));
+        holder.appendChild(box('bad', name, (pv.left_out_rows || {})[name] || 'Left out. Nothing is read or sent to it. Tell the Scale Manager.'));
       });
       pv.drift.forEach(function (dr, i) {
         var plain = dr.plain || null;   /* staff words from the server for a drift nobody may override */
@@ -706,7 +706,7 @@
         /* Sending reads that scale again, which can freeze it for good. Nothing goes out until a person has looked. */
         blocked = true;
         holder.appendChild(box('bad', 'Do not send', 'A scale did not answer, or could not connect, and sending would try it again.',
-          'Tell Bart. Do not try again and again. To send to the other scales only, go back and review it again. That scale will be left out.'));
+          'Tell the Scale Manager. Do not try again and again. To send to the other scales only, go back and review it again. That scale will be left out.'));
       }
       if (checkError) {
         /* The read check did not run. A change that needs empty slots is refused unless a review showed them. */

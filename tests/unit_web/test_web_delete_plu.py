@@ -214,7 +214,7 @@ def test_the_page_cannot_send_a_code(web):
 def test_a_code_that_does_not_match_gets_a_plain_refusal():
     err = {"code": "code_plu_mismatch", "message": "Code 1998 must equal the PLU 1999.", "index": 0, "field": "code"}
     plain = words.plain_error(err)
-    assert plain["message"] == "The PLU and the code must be the same number. Do not send this. Tell Bart."
+    assert plain["message"] == "The PLU and the code must be the same number. Do not send this. Tell the Scale Manager."
     assert plain["code"] == "code_plu_mismatch" and plain["index"] == 0 and plain["field"] == "code"
 
 
@@ -311,7 +311,7 @@ def test_a_read_with_no_reply_says_the_scale_may_need_a_reboot_in_the_review(mak
     sick = [w for w in p["warnings"] if w["code"] == "scale_read_failed"]
     assert sick and sick[0]["may_be_frozen"] is True
     assert p["scales_read"] == []
-    assert "REBOOT = 'The scale did not answer. It may need a reboot. Tell Bart.'" in SCRIPT
+    assert "REBOOT = 'The scale did not answer. It may need a reboot. Tell the Scale Manager.'" in SCRIPT
     web.env.fakes["A"].reboot()
 
 

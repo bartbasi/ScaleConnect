@@ -137,12 +137,12 @@ def test_the_page_tells_a_failed_connect_from_a_scale_that_gave_no_reply(make_we
     item = web.client.get("/api/item/1001").json()
     assert item["frozen_scales"] == ["B"] and item["frozen_how"] == {"B": "unreachable"}
     row = next(r for r in item["scales"] if r["scale"] == "B")
-    assert row["flag"] == "frozen" and row["text"].startswith("Could not connect. Tell Bart.")
+    assert row["flag"] == "frozen" and row["text"].startswith("Could not connect. Tell the Scale Manager.")
     card = next(c for c in web.client.get("/api/unfinished").json()["items"] if c["kind"] == "frozen_scale")
     assert "could not be reached" in card["text"] and "off the WiFi, or it may be frozen" in card["text"]
     before = lp(web, "B")
     rows = {r["scale"]: r for r in web.post("/api/check", {"plu": "1001"}).json()["scales"]}
-    assert rows["B"]["text"].startswith("B: Could not connect. Tell Bart.") and lp(web, "B") == before
+    assert rows["B"]["text"].startswith("B: Could not connect. Tell the Scale Manager.") and lp(web, "B") == before
 
 
 def test_the_page_keeps_did_not_answer_for_a_scale_that_connected_and_gave_no_reply(make_web):
@@ -150,7 +150,7 @@ def test_the_page_keeps_did_not_answer_for_a_scale_that_connected_and_gave_no_re
     check_with_b_silent(other)
     item = other.client.get("/api/item/1001").json()
     assert item["frozen_how"] == {"B": "no_reply"}
-    assert next(r for r in item["scales"] if r["scale"] == "B")["text"].startswith("Did not answer. Tell Bart.")
+    assert next(r for r in item["scales"] if r["scale"] == "B")["text"].startswith("Did not answer. Tell the Scale Manager.")
     card = next(c for c in other.client.get("/api/unfinished").json()["items"] if c["kind"] == "frozen_scale")
     assert card["text"].startswith("B did not answer earlier")
 

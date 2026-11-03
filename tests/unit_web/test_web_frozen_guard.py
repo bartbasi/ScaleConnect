@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-DID_NOT_ANSWER = "Did not answer. Tell Bart."
+DID_NOT_ANSWER = "Did not answer. Tell the Scale Manager."
 THREE = {"A": True, "B": True, "C": True}
 
 
@@ -72,7 +72,7 @@ def assert_page_reaches_nothing_on(web, scale, plu, alone=False):
                 assert pv["errors"][0]["message"].startswith(DID_NOT_ANSWER) and scale in pv["errors"][0]["message"]
                 continue
             assert pv["ok"] is True and scale not in pv["scales"] and pv["left_out"] == [scale], pv
-            assert pv["left_out_text"] == f"{scale} is left out. It did not answer last time. Tell Bart."
+            assert pv["left_out_text"] == f"{scale} is left out. It did not answer last time. Tell the Scale Manager."
             assert [w["requires_ack"] for w in pv["warnings"] if w["code"] == "scale_left_out"] == [True]
     settle = web.post("/api/settle/preview", {"scale": scale, "take": "catalog", "plu": plu}).json()
     assert settle["ok"] is False and settle["errors"][0]["code"] == "scale_may_be_frozen"

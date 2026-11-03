@@ -446,7 +446,7 @@ def test_a_scale_that_did_not_answer_blocks_the_send_and_says_so_on_its_line(mak
     sick = next(w for w in p["warnings"] if w["code"] == "scale_read_failed")
     assert sick["may_be_frozen"] is True and sick["scales_named"] == ["A"]
     review = SCRIPT.split("function renderReview")[1].split("function renderResult")[0]
-    assert "frozenSeen" in review and "Did not answer. Do not send. Tell Bart." in review
+    assert "frozenSeen" in review and "Did not answer. Do not send. Tell the Scale Manager." in review
     assert "A scale did not answer, or could not connect, and sending would try it again." in review
     assert "blocked = true;" in review.split("if (frozenSeen) {")[1].split("}")[0]
     web.env.fakes["A"].reboot()
@@ -516,7 +516,7 @@ def test_a_read_that_ends_early_is_a_blocked_drift_in_staff_words(make_web):
     assert d["kind"] == "read_ended_early" and d["can_ack"] is False and d["ack_token"] is None
     assert d["plain"]["plain"] == "A gave back fewer items than our list has."
     assert d["plain"]["blocked"] == "This scale differs from our list, and a person must look at it."
-    assert "Tell Bart" in d["plain"]["more"] and "reload" in d["plain"]["more"]
+    assert "Tell the Scale Manager" in d["plain"]["more"] and "reload" in d["plain"]["more"]
     web.send(p["preview_id"], warnings=acks(p))
     done = web.wait_finished(p["preview_id"])
     r = done["rows"][0]
@@ -539,7 +539,7 @@ def test_a_fill_over_listed_items_is_a_blocked_drift_in_staff_words(make_web):
     bad = [d for d in p["drift"] if d["kind"] == "fill_blocked"]
     assert len(bad) == 1 and bad[0]["can_ack"] is False
     assert bad[0]["plain"]["plain"] == "B has gaps where our list has items."
-    assert "Tell Bart" in bad[0]["plain"]["more"]
+    assert "Tell the Scale Manager" in bad[0]["plain"]["more"]
     web2.send(p["preview_id"], warnings=acks(p))
     done = web2.wait_finished(p["preview_id"])
     b = next(r for r in done["rows"] if r["scale"] == "B")

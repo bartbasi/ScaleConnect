@@ -38,7 +38,7 @@ OUTCOME_WORDS: dict[str, tuple[str, str]] = {
     "partial": ("Only partly done. Read each scale below.", WARN),
     "unknown": ("Not sure what happened. Look at the scales.", BAD),
     "failed": ("It did not work. Nothing was changed on any scale.", BAD),
-    "catalog_out_of_sync": ("The scales were contacted, but our own list could not be fully updated. Tell Bart.", BAD),
+    "catalog_out_of_sync": ("The scales were contacted, but our own list could not be fully updated. Tell the Scale Manager.", BAD),
     "interrupted": ("This change never finished. Look at the scales.", BAD),
     "in_progress": ("Working. Please wait.", WORKING),
 }
@@ -98,11 +98,11 @@ def _held_text(item: Item | None) -> str | None:
     return f"{item.description}, ${item.price}"
 
 
-REBOOT_LINE = "The scale did not answer. It may need a reboot. Tell Bart."
+REBOOT_LINE = "The scale did not answer. It may need a reboot. Tell the Scale Manager."
 
 # Shown while the config file says something this running page has not loaded. Nothing is sent until it is restarted.
 CONFIG_NOTICE = ("Nothing was sent. The settings have changed since this page started. "
-                 "Tell Bart. The web page and the MCP server need restarting together.")
+                 "Tell the Scale Manager. The web page and the MCP server need restarting together.")
 
 
 def _get(drift: Any, name: str) -> Any:
@@ -135,14 +135,14 @@ TABLE_DRIFT_WORDS: dict[str, dict[str, str]] = {
     "read_ended_early": {
         "plain": "{scale} gave back fewer items than our list has.",
         "blocked": "This scale differs from our list, and a person must look at it.",
-        "more": "Nothing can be sent to it from this page. Tell Bart. Bart can reload the scale from the command line.",
-        "row": "this scale gave back fewer items than our list has. Nothing was sent. A person must look at it. Tell Bart.",
+        "more": "Nothing can be sent to it from this page. Tell the Scale Manager. Bart can reload the scale from the command line.",
+        "row": "this scale gave back fewer items than our list has. Nothing was sent. A person must look at it. Tell the Scale Manager.",
     },
     "fill_blocked": {
         "plain": "{scale} has gaps where our list has items.",
         "blocked": "This scale differs from our list, and a person must look at it.",
-        "more": "Sending would put empty slots over items. Nothing can be sent to it from this page. Tell Bart.",
-        "row": "this scale has gaps where our list has items. Nothing was sent. A person must look at it. Tell Bart.",
+        "more": "Sending would put empty slots over items. Nothing can be sent to it from this page. Tell the Scale Manager.",
+        "row": "this scale has gaps where our list has items. Nothing was sent. A person must look at it. Tell the Scale Manager.",
     },
     "fill_not_previewed": {
         "plain": "{scale} would need empty slots to leave no gap, and no review showed that.",
@@ -233,13 +233,13 @@ def left_out_text(names: list[str], how: dict[str, str] | None = None) -> str:
     """Said at the top of a review and of a result. The change goes to the other scales."""
     where = _list_text(names)
     verb = "is" if len(names) == 1 else "are"
-    return f"{where} {verb} left out. {_silence_text(names, how, 'last time')} Tell Bart."
+    return f"{where} {verb} left out. {_silence_text(names, how, 'last time')} Tell the Scale Manager."
 
 
-LEFT_OUT_ROW = "left out. It did not answer last time, so nothing was sent to it. Tell Bart."
-LEFT_OUT_ROW_NO_CONNECT = "left out. We could not connect to it last time, so nothing was sent to it. Tell Bart."
+LEFT_OUT_ROW = "left out. It did not answer last time, so nothing was sent to it. Tell the Scale Manager."
+LEFT_OUT_ROW_NO_CONNECT = "left out. We could not connect to it last time, so nothing was sent to it. Tell the Scale Manager."
 LEFT_OUT_NOW = "It still has what it had. It stays on the Not finished list until Bart has looked at it."
-REBOOT_NO_CONNECT = "Could not connect to the scale. It may be off the WiFi, or frozen. Tell Bart."
+REBOOT_NO_CONNECT = "Could not connect to the scale. It may be off the WiFi, or frozen. Tell the Scale Manager."
 
 
 def left_out_row_text(name: str, how: str | None = None) -> str:
@@ -250,7 +250,7 @@ def left_out_row_text(name: str, how: str | None = None) -> str:
 def left_out_review_text(how: str | None = None) -> str:
     """The box for one left out scale on a review. The scale's name is the box's title."""
     why = "We could not connect to it last time." if how == "unreachable" else "It did not answer last time."
-    return f"Left out. {why} Nothing is read or sent to it. Tell Bart."
+    return f"Left out. {why} Nothing is read or sent to it. Tell the Scale Manager."
 
 
 def reboot_text(status: Any, how: str | None = None) -> str:
@@ -282,7 +282,7 @@ def scale_row(result: ScaleResult, how: str | None = None) -> dict[str, Any]:
         severity = BAD
     elif refused and any(_get(d, "kind") == "delete_may_have_landed" for d in result.drift):
         words = ("an earlier delete of this item has no confirmed result, so this scale may already have deleted it. Nothing was sent. "
-                 "To finish the delete, open the item and tap Delete this item. To bring the item back, tell Bart.")
+                 "To finish the delete, open the item and tap Delete this item. To bring the item back, tell the Scale Manager.")
         severity = BAD
     elif refused and any(is_different_product(d) for d in result.drift):
         words = "this scale holds a different product at this number. Nothing was sent. Call Bart."
@@ -482,7 +482,7 @@ def plain_error(error: dict[str, Any], unfinished: bool = False, how: dict[str, 
         else:
             text = "The numbers 9001 to 9500 are set aside for empty slots on the scales. Pick a different PLU."
     elif code == "code_plu_mismatch":
-        text = "The PLU and the code must be the same number. Do not send this. Tell Bart."
+        text = "The PLU and the code must be the same number. Do not send this. Tell the Scale Manager."
     elif code == "duplicate_plu":
         which = f"PLU {plu}" if plu else "That PLU"
         if "not finished" in message:
@@ -491,7 +491,7 @@ def plain_error(error: dict[str, Any], unfinished: bool = False, how: dict[str, 
         elif "was deleted" in message:
             text = f"{which} was deleted, but a scale may still sell it. Finish that delete first, or pick a different PLU."
         elif "names a live item" in message:
-            text = f"{which} is also a deleted item that a scale may still sell. Finish that delete first. Tell Bart."
+            text = f"{which} is also a deleted item that a scale may still sell. Finish that delete first. Tell the Scale Manager."
         else:
             text = f"{which} is already used by another item. Pick a different PLU."
     elif code == "config_changed":
@@ -506,7 +506,7 @@ def plain_error(error: dict[str, Any], unfinished: bool = False, how: dict[str, 
     elif code == "plu_edit_held":
         # A change of this item from the page would meet the same other product and be refused, so it is not offered.
         text = ("This scale has a different PLU at this number, so it may hold a different product. "
-                "Settling cannot change a PLU on a scale, and this page cannot force it. Tell Bart.")
+                "Settling cannot change a PLU on a scale, and this page cannot force it. Tell the Scale Manager.")
     elif code in TABLE_DRIFT_WORDS:
         text = f"{TABLE_DRIFT_WORDS[code]['blocked']} {TABLE_DRIFT_WORDS[code]['more']}"
     elif code == "reload_differences":
@@ -548,11 +548,11 @@ def plu_roles(plu: str, old_plus: Any, repeat: dict[str, Any]) -> tuple[str, lis
 
 
 ROLL_UP_ABOVE = 5  # more missed changes than this on one scale get one card, with every row still in the data
-DID_NOT_ANSWER = "Did not answer. Tell Bart."
-COULD_NOT_CONNECT = "Could not connect. Tell Bart."
+DID_NOT_ANSWER = "Did not answer. Tell the Scale Manager."
+COULD_NOT_CONNECT = "Could not connect. Tell the Scale Manager."
 CHECK_THEN_CALL = "Check this scale, then call Bart."
 LIST_FAILED_TEXT = "The list of work not finished could not be built."
-LIST_FAILED_MORE = "Do not take this as all clear. Tell Bart."
+LIST_FAILED_MORE = "Do not take this as all clear. Tell the Scale Manager."
 
 
 def frozen_more(names: list[str]) -> str:
@@ -634,7 +634,7 @@ def holds_other_product(read: Item | None, wanted: Item) -> bool:
 
 def _other_product_words(scale: str) -> str:
     return (f"When {scale} was last read, it had a different product at this number. This page cannot fix that. "
-            "Settling never changes a PLU, and a change from here cannot replace another product. Tell Bart.")
+            "Settling never changes a PLU, and a change from here cannot replace another product. Tell the Scale Manager.")
 
 
 def _missed_card(u: Any, how: str | None = None, other_product: bool = False) -> dict[str, Any]:
@@ -688,7 +688,7 @@ def _rolled_up_card(scale: str, rows: list[Any], kind: str, how: str | None = No
         card["more"] = f"{scale} may hold the new values. {CHECK_THEN_CALL} Putting our list on {scale} would put the old values back."
     else:
         card["text"] = f"{count} items have not been confirmed on {scale}."
-        card["more"] = f"Tell Bart. One check of {scale} clears any that match our list, and a reload at the command line puts them all right."
+        card["more"] = f"Tell the Scale Manager. One check of {scale} clears any that match our list, and a reload at the command line puts them all right."
     return card
 
 

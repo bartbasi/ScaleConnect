@@ -18,7 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = (ROOT / "src" / "scaleconnect" / "web" / "static" / "app.js").read_text(encoding="utf-8")
 STAFF = (ROOT / "docs" / "STAFF.md").read_text(encoding="utf-8")
-DID_NOT_ANSWER = "Did not answer. Tell Bart."
+DID_NOT_ANSWER = "Did not answer. Tell the Scale Manager."
 THREE = {"A": True, "B": True, "C": True}
 EDIT1 = [{"action": "edit", "target_plu": "1001", "price": "11.00"}]
 EDIT2 = [{"action": "edit", "target_plu": "1002", "price": "7.00"}]
@@ -113,13 +113,13 @@ def test_a_change_leaves_a_frozen_scale_out_goes_to_the_others_and_stays_unfinis
     before = lp(web, "B")
     p = web.preview(EDIT1, read=True).json()
     assert p["ok"] and p["scales"] == ["A", "C"] and p["left_out"] == ["B"]
-    assert p["left_out_text"] == "B is left out. It did not answer last time. Tell Bart."
+    assert p["left_out_text"] == "B is left out. It did not answer last time. Tell the Scale Manager."
     assert web.send(p["preview_id"], warnings=False).status_code == 400, "leaving a scale out needs a tick"
     assert web.send(p["preview_id"], warnings=True).status_code == 200
     done = web.wait_finished(p["preview_id"])
     rows = {r["scale"]: r for r in done["rows"]}
     assert rows["A"]["status"] == "verified" and rows["C"]["status"] == "verified"
-    assert rows["B"]["status"] == "left_out" and "left out" in rows["B"]["text"] and "Tell Bart" in rows["B"]["text"]
+    assert rows["B"]["status"] == "left_out" and "left out" in rows["B"]["text"] and "Tell the Scale Manager" in rows["B"]["text"]
     assert done["left_out"] == ["B"] and done["left_out_text"] == p["left_out_text"]
     assert done["outcome"] == "partial" and done["heading"].startswith("Only some scales were changed")
     assert lp(web, "B") == before, "nothing may reach B"
@@ -202,7 +202,7 @@ def test_the_words_no_longer_say_no_change_can_reach_any_scale():
     assert "no change can be sent to any scale" not in SCRIPT
     assert "will not send any change to any scale" not in STAFF
     section = STAFF.split("## Not finished work")[1].split("\n## ")[0]
-    assert "is left out. It did not answer last time. Tell Bart." in section
+    assert "is left out. It did not answer last time. Tell the Scale Manager." in section
 
 
 def test_a_settle_on_another_scale_still_works_while_one_may_be_frozen(make_web):

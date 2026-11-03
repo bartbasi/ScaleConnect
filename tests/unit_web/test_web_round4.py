@@ -31,7 +31,7 @@ def changed(web, monkeypatch):
 
 def test_the_notice_words_say_nothing_was_sent_tell_bart_and_restart_both():
     text = words.CONFIG_NOTICE
-    assert "Nothing was sent." in text and "Tell Bart." in text
+    assert "Nothing was sent." in text and "Tell the Scale Manager." in text
     assert "web page and the MCP server need restarting together" in text
     assert "\u2014" not in text and "--" not in text
     assert words.plain_error({"code": "config_changed", "message": LIBRARY_WORDS})["message"] == text
@@ -117,7 +117,7 @@ def test_a_settle_to_the_list_after_a_lost_delete_says_what_to_do_instead(make_w
     row = done["rows"][0]
     assert row["status"] == "drift_refused"
     assert "an earlier delete of this item has no confirmed result" in row["text"]
-    assert "open the item and tap Delete this item" in row["text"] and "tell Bart" in row["text"]
+    assert "open the item and tap Delete this item" in row["text"] and "tell the Scale Manager" in row["text"]
     assert "Call Bart" not in row["text"] and "something different from our list" not in row["text"]
     assert "Do not settle this item to our list" in row["now"]
     # The item is still listed, the scale still holds the empty slot, and nothing was brought back

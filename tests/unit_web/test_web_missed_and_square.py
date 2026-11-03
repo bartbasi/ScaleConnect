@@ -246,8 +246,8 @@ def test_a_scale_that_did_not_answer_gets_no_fix_button(make_web):
     card = web.client.get("/api/unfinished").json()["items"][0]
     row = item_row(web, "B")
     web.env.fakes["B"].clear_faults()
-    assert card["button"] is None and "Did not answer. Tell Bart." in card["more"]
-    assert row["can_fix"] is False and row["missed"]["kind"] == "frozen" and "Did not answer. Tell Bart." in row["text"]
+    assert card["button"] is None and "Did not answer. Tell the Scale Manager." in card["more"]
+    assert row["can_fix"] is False and row["missed"]["kind"] == "frozen" and "Did not answer. Tell the Scale Manager." in row["text"]
 
 
 def test_a_scale_that_may_differ_says_may_differ_when_nobody_has_read_it_since(make_web):
@@ -282,14 +282,14 @@ def test_the_item_page_does_not_say_matches_from_a_read_older_than_the_miss(make
     assert row["last_read"] is not None and row["differs"] == [], "the read itself does match"
     # Round 7 L2: a bad answer on a scale that then closed is a plain failure, not a freeze. The row still does not say it matches.
     assert row["flag"] == "unsure" and "Matches" not in row["text"]
-    assert "Did not answer. Tell Bart." not in row["text"]
+    assert "Did not answer. Tell the Scale Manager." not in row["text"]
     # Round 6 N3: a reload whose read back got no reply carries the freeze flag, so the row says that, and offers nothing.
     web.env.fakes["A"].stall_read(times=None)
     web.env.svc.reload_scale("A", accept_differences=True, requested_by="test")
     web.env.fakes["A"].clear_faults()
     row = item_row(web, "A")
     assert row["flag"] == "frozen" and "Matches" not in row["text"]
-    assert "Did not answer. Tell Bart." in row["text"] and row["can_fix"] is False
+    assert "Did not answer. Tell the Scale Manager." in row["text"] and row["can_fix"] is False
 
 
 def test_the_item_page_does_not_say_different_from_a_read_older_than_the_miss(make_web):
@@ -327,7 +327,7 @@ def test_the_settle_screen_keeps_the_choice_for_a_real_difference():
 def test_the_item_page_says_a_scale_did_not_answer_before_anyone_taps():
     """Round 6 N1: the server leaves that scale out of a check and refuses reviews. The page says so first."""
     item = SCRIPT.split("function renderItem(plu, my, checked)")[1].split("if (d.sending_now)")[0]
-    assert "d.frozen_scales" in item and "'Did not answer. Tell Bart.'" in item
+    assert "d.frozen_scales" in item and "'Did not answer. Tell the Scale Manager.'" in item
     assert "A check reads the other scales only." in item and "s.flag === 'frozen'" in item
 
 
@@ -357,7 +357,7 @@ def test_five_misses_stay_five_cards():
 
 def test_a_roll_up_keeps_a_scale_that_did_not_answer_and_what_our_list_did_not_take_apart():
     frozen = words.unfinished_cards([fake_row("B", str(1000 + i), may_be_frozen=True) for i in range(1, 8)])
-    assert len(frozen) == 1 and "Did not answer. Tell Bart." in frozen[0]["more"]
+    assert len(frozen) == 1 and "Did not answer. Tell the Scale Manager." in frozen[0]["more"]
     taken_or_not = words.unfinished_cards(
         [fake_row("B", str(1000 + i), catalog_took_it=False) for i in range(1, 8)] + [fake_row("B", str(1100 + i)) for i in range(1, 8)]
     )
@@ -384,7 +384,7 @@ def test_one_bad_log_row_does_not_stop_the_item_page_or_the_home_cards(make_web)
 
 def test_the_staff_guide_says_what_the_page_does_for_a_missed_change():
     section = STAFF.split("## Not finished work")[1].split("\n## ")[0]
-    assert "Did not answer. Tell Bart." in section
+    assert "Did not answer. Tell the Scale Manager." in section
     assert "Check this scale, then call Bart" in section
     assert "may differ" in section and "If you are not sure, call Bart" in section
     assert "The page does not offer it there" not in section
@@ -411,7 +411,7 @@ def test_a_missed_change_on_a_scale_holding_another_product_has_no_button_and_sa
     assert card["button"] is None and card["no_fix"] is True
     assert card["text"] == "The newest change to PLU 1001 has not reached B."
     assert "When B was last read, it had a different product at this number." in card["more"]
-    assert "Tell Bart." in card["more"] and "Change this item" not in card["more"] and "Test Other" not in card["more"]
+    assert "Tell the Scale Manager." in card["more"] and "Change this item" not in card["more"] and "Test Other" not in card["more"]
 
 
 def test_the_item_page_row_says_another_product_and_offers_no_fix(make_web):
@@ -430,7 +430,7 @@ def test_the_settle_refusal_no_longer_points_to_change_this_item(make_web):
     r = web.post("/api/settle/preview", {"scale": "B", "take": "catalog", "plu": "1001"}).json()
     assert r["ok"] is False and r["errors"][0]["code"] == "plu_edit_held"
     message = r["errors"][0]["message"]
-    assert "Change this item" not in message and "different product" in message and "Tell Bart." in message
+    assert "Change this item" not in message and "different product" in message and "Tell the Scale Manager." in message
 
 
 def test_the_other_product_words_keep_the_writing_rule():

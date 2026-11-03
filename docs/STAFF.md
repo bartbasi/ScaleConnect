@@ -5,7 +5,7 @@ For anyone at the deli counter. Keep it short. Read the top part first.
 ## The most important rules
 
 1. After a change, look at the scale. Check the price on the display.
-2. If a scale shows a problem, do not try again and again. Tell Bart.
+2. If a scale shows a problem, do not try again and again. Tell the Scale Manager.
 3. Do not send items from ScaleLink unless Bart says so.
 
 ## Open the page
@@ -25,7 +25,7 @@ The page is slow on purpose. It reads each scale before it sends, and checks eac
 
 Expect that. Do not refresh the page. Do not tap anything twice. Do not send the same change again while it runs. You can lock your phone. Open the page again later to see where it is. Use "Recent changes" or "See the last change I sent".
 
-If it has been more than 5 minutes, look at the scales and tell Bart. Do not send again.
+If it has been more than 5 minutes, look at the scales and tell the Scale Manager. Do not send again.
 
 ## Find an item
 
@@ -105,11 +105,11 @@ For a new item or a price change that missed one scale, the box says "The newest
 
 Some boxes have no button. That is on purpose.
 
-- **"Did not answer. Tell Bart."** The scale gave no reply, to a change, a check or a review. Do not check it or change it. While this shows, the page sends nothing to that scale, and its boxes have no button. "Check the scales now" still reads the other scales, and leaves that one out. You can still change items. The change goes to the other scales only. See "When a scale is left out" below.
+- **"Did not answer. Tell the Scale Manager."** The scale gave no reply, to a change, a check or a review. Do not check it or change it. While this shows, the page sends nothing to that scale, and its boxes have no button. "Check the scales now" still reads the other scales, and leaves that one out. You can still change items. The change goes to the other scales only. See "When a scale is left out" below.
 - **"Our list did not take it."** The change may be on that scale, and our list still has the old value. Check this scale, then call Bart. Putting our list on that scale would put the old value back.
-- **"It had a different product at this number."** When that scale was last read, it held another product where this item should be. This page cannot fix that. Tell Bart.
-- **A count, such as "12 items have not been confirmed".** Many items missed that scale. Tell Bart. One check of that scale clears any that match.
-- **"The list of work not finished could not be built."** Do not take this as all clear. Tell Bart.
+- **"It had a different product at this number."** When that scale was last read, it held another product where this item should be. This page cannot fix that. Tell the Scale Manager.
+- **A count, such as "12 items have not been confirmed".** Many items missed that scale. Tell the Scale Manager. One check of that scale clears any that match.
+- **"The list of work not finished could not be built."** Do not take this as all clear. Tell the Scale Manager.
 
 To finish a delete or a PLU change:
 
@@ -123,17 +123,17 @@ Sometimes the box says the change "may have landed", and that nobody has confirm
 
 A repeat on an old result can be out of date. If the item has been finished or replaced since, the page says "This repeat is out of date" and sends nothing.
 
-If a scale did not answer while the review was checking it, the review says "Do not send" and the send button is off. Do not try again and again. Tell Bart. To send the change to the other scales only, go back and review it again. That scale is then left out.
+If a scale did not answer while the review was checking it, the review says "Do not send" and the send button is off. Do not try again and again. Tell the Scale Manager. To send the change to the other scales only, go back and review it again. That scale is then left out.
 
 ### When a scale is left out
 
-If a scale did not answer earlier, a review leaves it out. A red box at the top of the review says so, for example: "FRONT is left out. It did not answer last time. Tell Bart." If the page could not reach the scale at all, it says "We could not connect to it last time" instead. That may only be the WiFi, but treat it the same way. Tick the box that says you understand. The change then goes to the other scales only.
+If a scale did not answer earlier, a review leaves it out. A red box at the top of the review says so, for example: "FRONT is left out. It did not answer last time. Tell the Scale Manager." If the page could not reach the scale at all, it says "We could not connect to it last time" instead. That may only be the WiFi, but treat it the same way. Tick the box that says you understand. The change then goes to the other scales only.
 
 The result says the same thing at the top. The line for that scale says it was left out, and that nothing was sent to it. It still has the old price, or does not have the item.
 
-That scale then shows in "Not finished" as missing the change. Its box says "Did not answer. Tell Bart." and has no button. Only Bart can clear it. He checks the scale, then puts the change on it.
+That scale then shows in "Not finished" as missing the change. Its box says "Did not answer. Tell the Scale Manager." and has no button. Only Bart can clear it. He checks the scale, then puts the change on it.
 
-If every scale a change would reach did not answer, the review says "Did not answer. Tell Bart." and nothing is sent.
+If every scale a change would reach did not answer, the review says "Did not answer. Tell the Scale Manager." and nothing is sent.
 
 A box for a delete or a PLU change goes away only when that scale has confirmed it. Until then, do not give the old PLU or the new PLU to another item.
 
@@ -141,7 +141,7 @@ A scale still on an old PLU has no "Fix this difference" button, because it woul
 
 ## What "UNUSED" means
 
-A deleted item leaves an empty slot on each scale. The slot is named UNUSED. It has a PLU from 9001 to 9500 and a price of 0.01. If you ever see UNUSED on a scale or a label, it is an empty slot, not a real product. Do not sell it. Do not try to change it. Tell Bart if you see it on a label.
+A deleted item leaves an empty slot on each scale. The slot is named UNUSED. It has a PLU from 9001 to 9500 and a price of 0.01. If you ever see UNUSED on a scale or a label, it is an empty slot, not a real product. Do not sell it. Do not try to change it. Tell the Scale Manager if you see it on a label.
 
 ## What you cannot do here
 
@@ -157,24 +157,24 @@ You see one line for each scale.
 |---|---|---|
 | Changed and checked | The scale has the new item or price. It was read back and matched. | Nothing. |
 | Accepted, but not checked | The scale said OK. It was not read back. | Look at the scale. |
-| The scale refused it | The scale said Error. It should not have changed. | Look at the scale. Tell Bart. |
-| No clear answer | We do not know if it changed. | Look at the scale. Do not send again. Tell Bart. |
-| The scale took it, but now shows something different | The scale holds other values than you asked for. | Look at the scale. Tell Bart. |
-| Could not connect | Nothing was sent. The scale is as it was. It may be off the WiFi, or frozen. | Check the scale is on and on WiFi. Tell Bart. The page leaves that scale out until he has looked at it. |
-| Could not read the scale first | Nothing was sent. | Try again in a minute. If the line below says it did not answer, or could not connect, do not try again. Tell Bart. |
-| This is not the scale it should be | Nothing was sent. | Tell Bart. |
-| The scale holds something different from our list | Nothing was sent. | Tell Bart. Do not force it. |
-| Changes are turned off for this scale | Nothing was sent to this scale. | Tell Bart. That scale still has the old price. |
-| Left out. It did not answer last time, so nothing was sent to it. | This scale did not answer earlier, so the change went to the other scales only. | Tell Bart. See "When a scale is left out". |
-| Left out. We could not connect to it last time, so nothing was sent to it. | The page could not reach this scale earlier. It may be off the WiFi, or frozen. The change went to the other scales only. | Tell Bart. See "When a scale is left out". |
+| The scale refused it | The scale said Error. It should not have changed. | Look at the scale. Tell the Scale Manager. |
+| No clear answer | We do not know if it changed. | Look at the scale. Do not send again. Tell the Scale Manager. |
+| The scale took it, but now shows something different | The scale holds other values than you asked for. | Look at the scale. Tell the Scale Manager. |
+| Could not connect | Nothing was sent. The scale is as it was. It may be off the WiFi, or frozen. | Check the scale is on and on WiFi. Tell the Scale Manager. The page leaves that scale out until they have looked at it. |
+| Could not read the scale first | Nothing was sent. | Try again in a minute. If the line below says it did not answer, or could not connect, do not try again. Tell the Scale Manager. |
+| This is not the scale it should be | Nothing was sent. | Tell the Scale Manager. |
+| The scale holds something different from our list | Nothing was sent. | Tell the Scale Manager. Do not force it. |
+| Changes are turned off for this scale | Nothing was sent to this scale. | Tell the Scale Manager. That scale still has the old price. |
+| Left out. It did not answer last time, so nothing was sent to it. | This scale did not answer earlier, so the change went to the other scales only. | Tell the Scale Manager. See "When a scale is left out". |
+| Left out. We could not connect to it last time, so nothing was sent to it. | The page could not reach this scale earlier. It may be off the WiFi, or frozen. The change went to the other scales only. | Tell the Scale Manager. See "When a scale is left out". |
 | This action is not available | Nothing was sent. | Ask Bart. |
 | An earlier PLU change did not finish on this scale | Nothing was sent. The scale is still on the old PLU, and the old PLU still works on it. | Tap "Repeat the PLU change". See "Not finished work". |
-| This scale gave back fewer items than our list has | Nothing was sent. The scale differs from our list, and a person must look at it. | Tell Bart. Do not force it. See "If a scale differs from the list". |
-| This scale has gaps where our list has items | Nothing was sent. The scale differs from our list, and a person must look at it. | Tell Bart. Do not force it. See "If a scale differs from the list". |
+| This scale gave back fewer items than our list has | Nothing was sent. The scale differs from our list, and a person must look at it. | Tell the Scale Manager. Do not force it. See "If a scale differs from the list". |
+| This scale has gaps where our list has items | Nothing was sent. The scale differs from our list, and a person must look at it. | Tell the Scale Manager. Do not force it. See "If a scale differs from the list". |
 | This change would have added empty slots, and no review showed that | Nothing was sent. | Go back. Review it again and wait until the scales say Checked. |
-| This scale already has that PLU on a different item | Nothing was sent. | Tell Bart. Do not force it. |
-| The scale did not answer. It may need a reboot. | The scale may have frozen. A reboot means turning it off and on again. | Tell Bart. See below. |
-| Could not connect to the scale. It may be off the WiFi, or frozen. | The page could not reach the scale. Nothing was sent. | Check the scale is on and on WiFi. Tell Bart. Do not try again. |
+| This scale already has that PLU on a different item | Nothing was sent. | Tell the Scale Manager. Do not force it. |
+| The scale did not answer. It may need a reboot. | The scale may have frozen. A reboot means turning it off and on again. | Tell the Scale Manager. See below. |
+| Could not connect to the scale. It may be off the WiFi, or frozen. | The page could not reach the scale. Nothing was sent. | Check the scale is on and on WiFi. Tell the Scale Manager. Do not try again. |
 
 At the top you see one line for the whole change.
 
@@ -192,9 +192,9 @@ Never tell a customer a price is changed until every scale says "changed and che
 2. Look at the scale display. Is the price right? Is the item there?
 3. Look at the page. Open "Recent changes" to see the result.
 4. If the page stopped or the phone went to sleep, open it again and look at "Recent changes".
-5. Tell Bart what you saw. Say which scale.
+5. Tell the Scale Manager what you saw. Say which scale.
 
-If one scale says "could not connect", check that it is on and on WiFi, and tell Bart. The page leaves it out of the next changes until he has looked at it. The other scales still get changes.
+If one scale says "could not connect", check that it is on and on WiFi, and tell the Scale Manager. The page leaves it out of the next changes until they have looked at it. The other scales still get changes.
 
 ## If a scale differs from the list
 
@@ -204,18 +204,18 @@ This means the scale and our list do not agree about which items it holds. Sendi
 
 1. Do not try again and again. Do not tick your way past it. The page does not let you force it.
 2. Look at the scale. Check the price of the item you wanted to change.
-3. Tell Bart which scale it was, and what the page said.
+3. Tell the Scale Manager which scale it was, and what the page said.
 4. Bart looks at the scale against the list. Bart can reload the scale from the command line.
 
 Other scales may have taken the change. Read the line for each scale.
 
-If the page asks you to tick "Empty slots will be added so there is no gap", it means that scale has no item at some numbers, and empty slots named UNUSED will be put there so there is no gap. Read which numbers it names. If it surprises you, do not tick. Tell Bart.
+If the page asks you to tick "Empty slots will be added so there is no gap", it means that scale has no item at some numbers, and empty slots named UNUSED will be put there so there is no gap. Read which numbers it names. If it surprises you, do not tick. Tell the Scale Manager.
 
 ## If the page says the settings have changed
 
-Sometimes a red box says: "Nothing was sent. The settings have changed since this page started. Tell Bart. The web page and the MCP server need restarting together."
+Sometimes a red box says: "Nothing was sent. The settings have changed since this page started. Tell the Scale Manager. The web page and the MCP server need restarting together."
 
-This means Bart changed the settings file after the page started. The page will not send anything until it is restarted. Nothing was sent to any scale. Tell Bart. Do not keep trying. The send button stays off while the box shows.
+This means Bart changed the settings file after the page started. The page will not send anything until it is restarted. Nothing was sent to any scale. Tell the Scale Manager. Do not keep trying. The send button stays off while the box shows.
 
 ## If a delete has no confirmed result
 
@@ -223,16 +223,16 @@ Sometimes a delete gets no clear answer from a scale. The scale may or may not h
 
 If you then try to "Fix this difference" on that scale, the page may refuse and say that an earlier delete of this item has no confirmed result. Nothing was sent. Do not settle it to our list, because that would bring the item back.
 
-To finish the delete, open the item and tap "Delete this item". Read the review and tick the box. To bring the item back instead, tell Bart.
+To finish the delete, open the item and tap "Delete this item". Read the review and tick the box. To bring the item back instead, tell the Scale Manager.
 
 ## If a scale may need a reboot
 
-Sometimes the page says: "The scale did not answer. It may need a reboot. Tell Bart."
+Sometimes the page says: "The scale did not answer. It may need a reboot. Tell the Scale Manager."
 
 This means the scale stopped answering the page. It may have frozen. It can still weigh while it is frozen.
 
 1. Do not keep trying. Do not send the change again and again.
-2. Tell Bart which scale it was.
+2. Tell the Scale Manager which scale it was.
 3. Bart decides whether to turn the scale off and on, and whether to reload its items.
 
 Nothing was changed on a scale that did not answer, unless the line for that scale says otherwise. Check the price on the scale display.
@@ -248,7 +248,7 @@ ScaleLink is Tor-rey's program on the Windows PC. It can undo our work.
 - A send from ScaleLink can overwrite what ScaleConnect set. Old prices can come back.
 - ScaleLink's purge does not remove an item from a scale. The item stays on the scale.
 - Do not send from ScaleLink unless Bart says so.
-- If someone must use ScaleLink, tell Bart first. The page will show a difference next time.
+- If someone must use ScaleLink, tell the Scale Manager first. The page will show a difference next time.
 
 ## Who to ask
 
