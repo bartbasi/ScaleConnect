@@ -220,7 +220,7 @@ def test_a_code_that_does_not_match_gets_a_plain_refusal():
 
 def test_a_plu_the_scale_holds_under_another_item_is_in_plain_words():
     err = {"code": "plu_on_other_id", "message": "A already holds PLU 1999 at id 4.", "index": 0, "field": None}
-    assert words.plain_error(err)["message"] == "A scale already has that PLU on a different item. Call Bart."
+    assert words.plain_error(err)["message"] == "A scale already has that PLU on a different item. Call the Scale Manager."
     still = {"code": "duplicate_plu", "index": 0, "field": "plu",
              "message": "PLU 1001 may still be on id 1 of a scale, because a PLU change there has not finished."}
     text = words.plain_error(still)["message"]
@@ -254,14 +254,14 @@ def test_a_scale_that_is_marked_lagging_says_repeat_that_edit(web3):
     plain = drift[0]["plain"]
     assert "earlier PLU change did not finish" in plain["plain"]
     assert "Repeat the PLU change" in plain["more"]
-    assert "Call Bart" not in plain["more"]
+    assert "Call the Scale Manager" not in plain["more"]
 
     # Sending it anyway is refused for B, and the result row says to repeat the earlier edit
     web3.send(later["preview_id"], warnings=any(w["requires_ack"] for w in later["warnings"]))
     second = web3.wait_finished(later["preview_id"])
     rows = {row["scale"]: row for row in second["rows"]}
     assert rows["B"]["status"] == "drift_refused"
-    assert "Repeat the PLU change" in rows["B"]["text"] and "Call Bart" not in rows["B"]["text"]
+    assert "Repeat the PLU change" in rows["B"]["text"] and "Call the Scale Manager" not in rows["B"]["text"]
     assert web3.env.fakes["B"].item(1)[2] == "1001"
 
     # Repeating the same edit finishes it
@@ -294,7 +294,7 @@ def test_a_different_product_at_the_id_still_says_call_bart(web3):
     web3.send(p["preview_id"], warnings=any(w["requires_ack"] for w in p["warnings"]))
     done = web3.wait_finished(p["preview_id"])
     row = next(r for r in done["rows"] if r["scale"] == "B")
-    assert row["status"] == "drift_refused" and "different product" in row["text"] and "Call Bart" in row["text"]
+    assert row["status"] == "drift_refused" and "different product" in row["text"] and "Call the Scale Manager" in row["text"]
 
 
 # ---------------------------------------------------------------- a scale that may be frozen

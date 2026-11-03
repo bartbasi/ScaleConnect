@@ -325,7 +325,7 @@ def test_delete_is_not_offered_when_the_library_says_no(web, monkeypatch):
     monkeypatch.setattr(scale_module, "DELETE_AVAILABLE", False)
     state = web.client.get("/api/state").json()
     assert state["capabilities"]["delete"] is False
-    assert state["delete_note"] == "Deleting is not available right now. Ask Bart."
+    assert state["delete_note"] == "Deleting is not available right now. Ask the Scale Manager."
     assert "yet" not in state["delete_note"]
 
 

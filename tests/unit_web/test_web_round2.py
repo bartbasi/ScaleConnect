@@ -124,7 +124,7 @@ def test_different_product_row_says_call_bart(env):
 
     d = Drift("A", "id_occupied", 1, None, {}, None, "A holds something here.", None)
     row = words.scale_row(ScaleResult("A", "drift_refused", "x", drift=(d,)))
-    assert "different product" in row["text"] and "Call Bart" in row["text"]
+    assert "different product" in row["text"] and "Call the Scale Manager" in row["text"]
     assert row["severity"] == "bad"
 
 
@@ -161,7 +161,7 @@ def test_item_page_says_different_product_not_matches(web):
     d = web.client.get("/api/item/1001").json()
     row = d["scales"][0]
     assert row["flag"] == "different_product" and "plu" in row["differs"] and row["can_fix"] is True  # Bart may settle it
-    assert "DIFFERENT PRODUCT" in row["text"] and "Call Bart" in row["text"]
+    assert "DIFFERENT PRODUCT" in row["text"] and "Call the Scale Manager" in row["text"]
     assert row["last_read"]["plu"] == "9999"
 
 
@@ -176,7 +176,7 @@ def test_item_page_notices_a_difference_in_any_field(web):
 def test_item_page_says_when_the_read_found_nothing(web):
     web.env.catalog.record_scale_reads("A", [item(2, "1002", "Test Brie", "20.00")], "2026-01-02T00:00:00", covered_up_to=3)
     row = web.client.get("/api/item/1001").json()["scales"][0]
-    assert row["flag"] == "missing" and "found nothing" in row["text"] and "Call Bart" in row["text"]
+    assert row["flag"] == "missing" and "found nothing" in row["text"] and "Call the Scale Manager" in row["text"]
     assert row["last_read"] is None and row["last_read_at"]
 
 def test_matching_record_still_says_matches(web):
@@ -196,7 +196,7 @@ def test_a_different_product_cannot_be_forced_from_the_page(web):
     assert r.status_code == 200
     done = web.wait_finished(p["preview_id"])
     row = done["rows"][0]
-    assert row["status"] == "drift_refused" and "Call Bart" in row["text"]
+    assert row["status"] == "drift_refused" and "Call the Scale Manager" in row["text"]
     assert done["success"] is False and done["severity"] == "bad"
     assert web.env.fakes["A"].item(1)[2] == "9999" and web.env.fakes["A"].item(1)[4] == "10.00"
     assert web.env.writes("A") == []
@@ -387,7 +387,7 @@ def test_settle_and_orphan_screens_are_reachable_from_the_page():
 
     source = (Path(__file__).resolve().parents[2] / "src/scaleconnect/web/static/app.js").read_text(encoding="utf-8")
     for needle in ("renderSettle", "renderOrphans", "resolveForm", "/api/settle/preview", "/api/orphan", "/api/resolve",
-                   "Call Bart", "acked = {}"):
+                   "Call the Scale Manager", "acked = {}"):
         assert needle in source, needle
 
 

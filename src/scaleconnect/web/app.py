@@ -273,7 +273,7 @@ def create_app(
             "busy": jobs.busy(),
             "description_max_length": description_max,
             "plu_edit_enabled": plu_edit_enabled,
-            "delete_note": "" if caps.get("delete") else "Deleting is not available right now. Ask Bart.",
+            "delete_note": "" if caps.get("delete") else "Deleting is not available right now. Ask the Scale Manager.",
             "config_notice": words.CONFIG_NOTICE if config_notice() else None,
         }
     @app.post("/api/login")
@@ -314,7 +314,7 @@ def create_app(
         """Scales this page would reach that may be frozen, from the catalog and its log, with no scale contact.
         That is a logged change or reload, or any read, that got no reply, with no read since that answered.
         The page reads and sends nothing to them. A review leaves them out, and the change goes to the others.
-        Bart clears it through Claude or the command line: a compare of that scale that answers, or a reload."""
+        The Scale Manager clears it through Claude or the command line: a compare of that scale that answers, or a reload."""
         reached = [s.name for s in service.list_scales() if s.read_enabled]
         names = set(service.scales_may_be_frozen(unfinished))
         wanted = set(among) if among else set(reached)
@@ -374,13 +374,13 @@ def create_app(
                     elif "plu" in differs or "code" in differs:
                         row.update(flag="different_product", can_fix=info.write_enabled, text=(
                             f"This scale holds a DIFFERENT PRODUCT at this number (PLU {read.plu}). "
-                            "Do not change it from here. Call Bart."))
+                            "Do not change it from here. Call the Scale Manager."))
                     else:
                         row.update(flag="different", can_fix=info.read_enabled, text=(
                             "This scale holds something different: " + words.field_list(differs) + "."))
                 elif state_.last_read_at:
                     row.update(flag="missing", last_read_at=state_.last_read_at, can_fix=info.write_enabled,
-                               text="The last read found nothing at this number on this scale. Call Bart.")
+                               text="The last read found nothing at this number on this scale. Call the Scale Manager.")
                 elif state_.status:
                     words_, _ = words.status_words(state_.status)
                     row.update(flag="unsure", text=f"Last change: {words_}")
@@ -504,7 +504,7 @@ def create_app(
 
     @app.post("/api/settle/preview")
     def settle_preview(body: SettleBody, request: Request):
-        """Bart picks which side wins for one item on one scale. This reads the scale now."""
+        """The Scale Manager picks which side wins for one item on one scale. This reads the scale now."""
         problem = change_guard(request)
         if problem:
             return problem

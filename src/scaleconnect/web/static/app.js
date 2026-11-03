@@ -43,7 +43,7 @@
   function clear(el) { while (el.firstChild) { el.removeChild(el.firstChild); } }
   function show(nodes) {
     clear(app);
-    /* The settings changed after this page started. Nothing can be sent until Bart restarts it. */
+    /* The settings changed after this page started. Nothing can be sent until the Scale Manager restarts it. */
     if (S.configNotice) { app.appendChild(box('bad', 'Do not send', S.configNotice)); }
     addKids(app, nodes); window.scrollTo(0, 0);
   }
@@ -295,7 +295,7 @@
       nodes.push(h('a', { class: 'btn second', href: '#/result/' + encodeURIComponent(last.pid), text: 'See the last change I sent' }));
     }
     nodes.push(link('#/add', 'Add a new item', 'btn second'));
-    nodes.push(h('p', { class: 'small' }, h('a', { href: '#/orphans', text: 'Bart only: mark a scale number as taken' })));
+    nodes.push(h('p', { class: 'small' }, h('a', { href: '#/orphans', text: 'Scale Manager only: mark a scale number as taken' })));
     if (off.length) { nodes.push(h('p', { class: 'small', text: 'Changes are turned off for: ' + off.join(', ') + '.' })); }
     show(nodes);
     results.appendChild(hint);
@@ -340,7 +340,7 @@
             startRepeat('Repeat the PLU change to ' + meta.plu, s.repeat, { kind: 'plu_change', plu: meta.plu, old: meta.old || [] }, '#/item/' + encodeURIComponent(it.plu));
           } }));
         } else if (s.can_fix) {
-          box1.appendChild(link('#/settle/' + encodeURIComponent(it.plu) + '/' + encodeURIComponent(s.scale), (s.flag === 'different_product' ? 'Bart only: settle this on ' : 'Fix this difference on ') + s.scale, 'btn second'));
+          box1.appendChild(link('#/settle/' + encodeURIComponent(it.plu) + '/' + encodeURIComponent(s.scale), (s.flag === 'different_product' ? 'Scale Manager only: settle this on ' : 'Fix this difference on ') + s.scale, 'btn second'));
         }
         return box1;
       });
@@ -356,7 +356,7 @@
       var stuck = frozen.length ? box('bad', noAnswer.length ? 'Did not answer' : 'Could not connect',
         noAnswer.length ? 'Did not answer. Tell the Scale Manager.' : 'Could not connect. Tell the Scale Manager.',
         why + 'This page will not check or change ' + frozen.join(', ') +
-        ' until Bart has looked at it. A change goes to the other scales only.') : null;
+        ' until the Scale Manager has looked at it. A change goes to the other scales only.') : null;
       var nodes = [
         h('p', { class: 'small' }, h('a', { href: '#/', text: 'Back to search' })),
         h('div', { class: 'box' }, h('div', { class: 'big', text: it.plu }), h('div', { class: 'line', text: it.description }),
@@ -416,7 +416,7 @@
         h('label', { for: 'price' }, 'Price', h('span', { class: 'hint', text: 'For example 9.99' })), price,
         h('label', { for: 'desc' }, 'Description', h('span', { class: 'hint', text: 'Up to ' + S.descMax + ' letters or numbers' })), desc,
         h('label', { for: 'plu' }, 'PLU', S.pluEdit ? h('span', { class: 'hint', text: '4 digits. If you change it, the old PLU stops working on the scales.' }) : null), pluInput,
-        S.pluEdit ? null : h('p', { class: 'small', text: 'The PLU cannot be changed here. Ask Bart.' }),
+        S.pluEdit ? null : h('p', { class: 'small', text: 'The PLU cannot be changed here. Ask the Scale Manager.' }),
         msg,
         h('div', { class: 'sticky' }, h('button', { class: 'btn', type: 'button', text: 'Review the change', onclick: function () {
           clear(msg);
@@ -462,7 +462,7 @@
       h('label', { text: 'Sold by' }),
       h('div', { class: 'seg' }, h('label', { for: 'by-weight' }, w, h('span', { text: 'By weight' })),
         h('label', { for: 'by-piece' }, p, h('span', { text: 'By piece' }))),
-      h('details', null, h('summary', { text: 'Bart only: use a marked scale number' }),
+      h('details', null, h('summary', { text: 'Scale Manager only: use a marked scale number' }),
         h('label', { for: 'orphan' }, 'Scale number to replace', h('span', { class: 'hint', text: 'Only a number marked as taken. Leave empty for a normal add.' })), orphan),
       msg,
       h('div', { class: 'sticky' }, h('button', { class: 'btn', type: 'button', text: 'Review the new item', onclick: function () {
@@ -487,7 +487,7 @@
     var note = h('input', { type: 'text', id: 'note', autocomplete: 'off', maxlength: '150', placeholder: 'What did you see on the scales?' });
     var msg = h('div');
     return h('div', { class: 'box' },
-      h('div', { class: 'line', text: 'Bart only' }),
+      h('div', { class: 'line', text: 'Scale Manager only' }),
       h('p', { class: 'plain', text: 'Look at every scale first. Then write what you saw, and close this change.' }),
       note, msg,
       h('button', { class: 'btn second', type: 'button', text: 'I looked. Close this change.', onclick: function () {
@@ -500,7 +500,7 @@
   }
 
   /* A change that missed this scale. Nobody may know what it holds, so nobody is asked to pick a side.
-     The only choice is our list, or calling Bart. A scale that did not answer, or a change our list did not take, has no choice at all. */
+     The only choice is our list, or calling the Scale Manager. A scale that did not answer, or a change our list did not take, has no choice at all. */
   function renderMissedSettle(it, scale, miss, go) {
     var top = [
       h('p', { class: 'small' }, h('a', { href: '#/item/' + encodeURIComponent(it.plu), text: 'Back to the item' })),
@@ -514,11 +514,11 @@
       h('p', { class: 'plain', text: miss.text }),
       h('button', { class: 'btn', type: 'button', text: 'Our list is right. Put it on ' + scale + '.', onclick: function () { go('catalog'); } }),
       h('p', { class: 'small', text: 'The scale will be changed, then read back to check it.' }),
-      h('p', { class: 'plain', text: 'If you are not sure, call Bart.' })
+      h('p', { class: 'plain', text: 'If you are not sure, call the Scale Manager.' })
     ]);
   }
 
-  /* settle a difference on one scale. Bart picks which side wins. */
+  /* settle a difference on one scale. The Scale Manager picks which side wins. */
 
   function renderSettle(plu, scale, my) {
     return api('GET', '/api/item/' + encodeURIComponent(plu)).then(function (d) {
@@ -557,7 +557,7 @@
     show([
       h('p', { class: 'small' }, h('a', { href: '#/', text: 'Back to search' })),
       h('h1', { text: 'Mark a scale number as taken' }),
-      h('p', { class: 'plain', text: 'Use this only when a scale holds a product at a number that our list does not know. For example an old test item. Ask Bart first. After this, a new item can be told to replace it.' }),
+      h('p', { class: 'plain', text: 'Use this only when a scale holds a product at a number that our list does not know. For example an old test item. Ask the Scale Manager first. After this, a new item can be told to replace it.' }),
       h('label', { for: 'scale', text: 'Scale' }), scale,
       h('label', { for: 'num' }, 'Scale number', h('span', { class: 'hint', text: 'A number from 1 to 500' })), num,
       h('label', { for: 'onote' }, 'Note', h('span', { class: 'hint', text: 'What is it? For example, old test item' })), note,
@@ -699,7 +699,7 @@
           blocked = true;
           holder.appendChild(box('bad', 'Do not send',
             plain ? plain.blocked : (dr.different_product ? 'This scale holds a different product at this number. It cannot be forced from this page.' : 'This cannot be sent while the scale is like this.'),
-            plain ? plain.more : 'Call Bart.'));
+            plain ? plain.more : 'Call the Scale Manager.'));
         }
       });
       if (frozenSeen) {

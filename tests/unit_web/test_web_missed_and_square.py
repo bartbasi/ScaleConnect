@@ -234,10 +234,10 @@ def test_a_change_our_list_did_not_take_gets_its_own_card_with_no_fix_button(mak
     cards = {c["scales"][0]: c for c in web.client.get("/api/unfinished").json()["items"]}
     card = cards["B"]
     assert card["button"] is None and card["no_fix"] is True and len(cards) == 2
-    assert "Check this scale, then call Bart." in card["more"] and "our list did not take it" in card["text"]
+    assert "Check this scale, then call the Scale Manager." in card["more"] and "our list did not take it" in card["text"]
     assert "would put the old value back" in card["more"]
     row = item_row(web, "B")
-    assert row["can_fix"] is False and row["missed"]["kind"] == "not_taken" and "Check this scale, then call Bart." in row["text"]
+    assert row["can_fix"] is False and row["missed"]["kind"] == "not_taken" and "Check this scale, then call the Scale Manager." in row["text"]
 
 
 def test_a_scale_that_did_not_answer_gets_no_fix_button(make_web):
@@ -312,7 +312,7 @@ def test_a_real_drift_with_no_miss_keeps_the_old_words_and_the_fix(make_web):
 def test_the_settle_screen_for_a_miss_has_one_button_and_never_says_holds_something_different():
     missed = SCRIPT.split("function renderMissedSettle")[1].split("/* settle a difference on one scale")[0]
     assert "'Our list is right. Put it on ' + scale + '.'" in missed
-    assert "If you are not sure, call Bart." in missed
+    assert "If you are not sure, call the Scale Manager." in missed
     assert "The scale is right" not in missed and "holds something different" not in missed
     assert "go('scale')" not in missed
     assert "miss.status_text" in missed and "miss.kind !== 'fixable'" in missed
@@ -385,8 +385,8 @@ def test_one_bad_log_row_does_not_stop_the_item_page_or_the_home_cards(make_web)
 def test_the_staff_guide_says_what_the_page_does_for_a_missed_change():
     section = STAFF.split("## Not finished work")[1].split("\n## ")[0]
     assert "Did not answer. Tell the Scale Manager." in section
-    assert "Check this scale, then call Bart" in section
-    assert "may differ" in section and "If you are not sure, call Bart" in section
+    assert "Check this scale, then call the Scale Manager" in section
+    assert "may differ" in section and "If you are not sure, call the Scale Manager" in section
     assert "The page does not offer it there" not in section
     assert "The result page and the item page show it too" not in section
 

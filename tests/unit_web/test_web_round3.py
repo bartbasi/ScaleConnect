@@ -96,7 +96,7 @@ def test_a_scale_record_holding_those_words_does_not_flip_the_page(web3):
     done = web3.wait_finished(p["preview_id"])
     b = next(r for r in done["rows"] if r["scale"] == "B")
     assert b["status"] == "drift_refused"
-    assert "different product" in b["text"] and "Call Bart" in b["text"] and "Repeat" not in b["text"]
+    assert "different product" in b["text"] and "Call the Scale Manager" in b["text"] and "Repeat" not in b["text"]
 
 
 def test_the_result_row_for_a_scale_record_with_those_words_says_call_bart():
@@ -494,7 +494,7 @@ def test_a_fill_needs_a_preview_with_the_read_on_and_the_row_says_so(make_web):
     b = next(r for r in done["rows"] if r["scale"] == "B")
     assert b["status"] == "drift_refused"
     assert "no review showed that" in b["text"] and "Review it again" in b["text"]
-    assert "Call Bart" not in b["text"]
+    assert "Call the Scale Manager" not in b["text"]
     assert web.env.writes("B") == []
 
 

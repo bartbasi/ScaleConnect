@@ -135,7 +135,7 @@ TABLE_DRIFT_WORDS: dict[str, dict[str, str]] = {
     "read_ended_early": {
         "plain": "{scale} gave back fewer items than our list has.",
         "blocked": "This scale differs from our list, and a person must look at it.",
-        "more": "Nothing can be sent to it from this page. Tell the Scale Manager. Bart can reload the scale from the command line.",
+        "more": "Nothing can be sent to it from this page. Tell the Scale Manager, who can reload the scale from the command line.",
         "row": "this scale gave back fewer items than our list has. Nothing was sent. A person must look at it. Tell the Scale Manager.",
     },
     "fill_blocked": {
@@ -173,7 +173,7 @@ def drift_words(drift: Any) -> dict[str, str] | None:
         return {
             "plain": f"{scale} already has PLU{_plu_text(_get(drift, 'plu'))} on a different item.",
             "blocked": "This scale already has that PLU on a different item. It cannot be sent from this page.",
-            "more": "Call Bart.",
+            "more": "Call the Scale Manager.",
         }
     if kind in TABLE_DRIFT_WORDS:
         words = TABLE_DRIFT_WORDS[kind]
@@ -238,7 +238,7 @@ def left_out_text(names: list[str], how: dict[str, str] | None = None) -> str:
 
 LEFT_OUT_ROW = "left out. It did not answer last time, so nothing was sent to it. Tell the Scale Manager."
 LEFT_OUT_ROW_NO_CONNECT = "left out. We could not connect to it last time, so nothing was sent to it. Tell the Scale Manager."
-LEFT_OUT_NOW = "It still has what it had. It stays on the Not finished list until Bart has looked at it."
+LEFT_OUT_NOW = "It still has what it had. It stays on the Not finished list until the Scale Manager has looked at it."
 REBOOT_NO_CONNECT = "Could not connect to the scale. It may be off the WiFi, or frozen. Tell the Scale Manager."
 
 
@@ -275,7 +275,7 @@ def scale_row(result: ScaleResult, how: str | None = None) -> dict[str, Any]:
         words = "an earlier PLU change did not finish on this scale, so the old PLU still works on it. Nothing was sent. Repeat the PLU change to finish it."
         severity = BAD
     elif refused_elsewhere:
-        words = "this scale already has that PLU on a different item. Nothing was sent. Call Bart."
+        words = "this scale already has that PLU on a different item. Nothing was sent. Call the Scale Manager."
         severity = BAD
     elif table_words:
         words = table_words
@@ -285,7 +285,7 @@ def scale_row(result: ScaleResult, how: str | None = None) -> dict[str, Any]:
                  "To finish the delete, open the item and tap Delete this item. To bring the item back, tell the Scale Manager.")
         severity = BAD
     elif refused and any(is_different_product(d) for d in result.drift):
-        words = "this scale holds a different product at this number. Nothing was sent. Call Bart."
+        words = "this scale holds a different product at this number. Nothing was sent. Call the Scale Manager."
         severity = BAD
     held = None
     for drift in (*result.mismatches, *result.drift):
@@ -297,7 +297,7 @@ def scale_row(result: ScaleResult, how: str | None = None) -> dict[str, Any]:
     elif refused and any(_get(d, "kind") == "delete_may_have_landed" for d in result.drift):
         now = "Do not settle this item to our list. That would bring it back."
     elif refused_elsewhere or (refused and any(is_different_product(d) for d in result.drift)):
-        now = "Do not try to force this. Call Bart."
+        now = "Do not try to force this. Call the Scale Manager."
     elif table_words:
         now = "Do not try to force this. A person must look at the scale."
     elif result.status in ("mismatch", "drift_refused") and held is not None:
@@ -499,7 +499,7 @@ def plain_error(error: dict[str, Any], unfinished: bool = False, how: dict[str, 
     elif code == "target_changed":
         text = "That number now belongs to a different item, so nothing was changed. The old result is out of date."
     elif code == "plu_on_other_id":
-        text = "A scale already has that PLU on a different item. Call Bart."
+        text = "A scale already has that PLU on a different item. Call the Scale Manager."
     elif code == "plu_change_not_finished" or (code == "plu_edit_held" and unfinished):
         text = ("A PLU change did not finish on this scale, so it may still be on the old PLU. "
                 "Settling would undo that change. Repeat the PLU change instead.")
@@ -513,7 +513,7 @@ def plain_error(error: dict[str, Any], unfinished: bool = False, how: dict[str, 
         text = ("A reload would change prices or items on the scale from what it last showed. "
                 "A person at the command line must look at the list first.")
     elif code == "delete_not_available":
-        text = "Deleting is not available right now. Ask Bart."
+        text = "Deleting is not available right now. Ask the Scale Manager."
     elif code == "scale_may_be_frozen":
         # From the library, when a scale stopped answering between the page's own check and the apply lock.
         names = [n for n in (error.get("scales") or []) if isinstance(n, str)]
@@ -550,7 +550,7 @@ def plu_roles(plu: str, old_plus: Any, repeat: dict[str, Any]) -> tuple[str, lis
 ROLL_UP_ABOVE = 5  # more missed changes than this on one scale get one card, with every row still in the data
 DID_NOT_ANSWER = "Did not answer. Tell the Scale Manager."
 COULD_NOT_CONNECT = "Could not connect. Tell the Scale Manager."
-CHECK_THEN_CALL = "Check this scale, then call Bart."
+CHECK_THEN_CALL = "Check this scale, then call the Scale Manager."
 LIST_FAILED_TEXT = "The list of work not finished could not be built."
 LIST_FAILED_MORE = "Do not take this as all clear. Tell the Scale Manager."
 
@@ -562,7 +562,7 @@ def frozen_more(names: list[str]) -> str:
 
 def frozen_refusal(names: list[str], how: dict[str, str] | None = None) -> dict[str, Any]:
     """The page refuses a review when every scale it would reach may be frozen, or a settle on such a scale.
-    Bart clears it through Claude or the command line. how is frozen_how, so a failed connect says so."""
+    The Scale Manager clears it through Claude or the command line. how is frozen_how, so a failed connect says so."""
     how = how or {}
     where = _list_text(names)
     stop = COULD_NOT_CONNECT if names and all(how.get(n) == "unreachable" for n in names) else DID_NOT_ANSWER

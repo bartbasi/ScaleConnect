@@ -4,7 +4,7 @@
 
 M1: a scale that gives no reply to the page's own check or review is remembered, so no later tap reads it.
 M2: one scale that may be frozen does not stop changes on the others. A review leaves it out, the result
-says so, and it stays on the unfinished list as missing that change, with no fix button, until Bart clears it.
+says so, and it stays on the unfinished list as missing that change, with no fix button, until The Scale Manager clears it.
 
 Fake scales on localhost, made up items. Each test counts LP messages to the scale that stalled.
 """
@@ -136,7 +136,7 @@ def test_a_change_leaves_a_frozen_scale_out_goes_to_the_others_and_stays_unfinis
     assert settle["ok"] is False and settle["errors"][0]["code"] == "scale_may_be_frozen"
     assert lp(web, "B") == before
 
-    # Bart clears it: a compare of B answers. B still has the old price, so the miss stays, now with its button.
+    # The Scale Manager clears it: a compare of B answers. B still has the old price, so the miss stays, now with its button.
     web.env.svc.compare_scales(["B"])
     listed = unfinished_on(web, "B")
     assert [(u.kind, u.may_be_frozen) for u in listed] == [("missed_change", False)]
