@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """A fake Tor-rey scale for tests. Standard library only.
 
 It listens on localhost only and speaks the protocol in docs/PROTOCOL.md.

@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Exceptions. Each has a stable .code and a plain .message. See docs/LIBRARY.md."""
 
 from __future__ import annotations

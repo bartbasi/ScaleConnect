@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Round 7 recheck, the page: M1, M2, L3, L4 and L5.
 
 M1: a scale that gives no reply to the page's own check or review is remembered, so no later tap reads it.

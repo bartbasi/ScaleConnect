@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Helpers for the web page tests. Fake scales on localhost only. Everything is made up."""
 
 from __future__ import annotations

@@ -1,3 +1,5 @@
+// ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+// Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 'use strict';
 /* ScaleConnect page. Everything shown is put on the page as text, never as HTML,
    so odd characters in a description cannot do anything. */

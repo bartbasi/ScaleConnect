@@ -1,3 +1,5 @@
+/* ScaleConnect. Copyright 2026 Cheese & Crackers, Inc. */
+/* Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE. */
 * { box-sizing: border-box; }
 html { font-size: 20px; }
 body {
@@ -24,6 +26,7 @@ h2 { font-size: 1.25rem; margin: 20px 0 8px 0; }
 p { margin: 8px 0; }
 .small { font-size: 0.85rem; color: #333333; }
 .plain { font-size: 1rem; }
+.legal { max-width: 720px; margin: 0 auto; padding: 0 16px 24px 16px; font-size: 0.8rem; color: #333333; }
 
 input[type="text"], input[type="search"], input[type="password"], input[type="number"], select, textarea {
   width: 100%;

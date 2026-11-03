@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Round four: a changed config file, a delete with no confirmed result, and the timing words.
 
 Fake scales on localhost only. Every item is made up. The page script has no runner here, so these

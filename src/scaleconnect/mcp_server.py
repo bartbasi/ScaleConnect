@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """The MCP server: how Claude updates the scales. See docs/MCP.md and docs/LIBRARY.md.
 
 Every tool calls ScaleConnectService. There is no scale or socket code here. All checks

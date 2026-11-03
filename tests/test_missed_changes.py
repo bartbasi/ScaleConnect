@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """A change that missed one scale must show as unfinished. Fake scales on localhost, made up items.
 
 The real case: an add went to three scales. The first scale's read failed, so it got nothing, and

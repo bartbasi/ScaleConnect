@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Round 9 recheck N4: a failed connect is not called a scale that did not answer, and the grammar of a list.
 Also N2 on the page: a no reply the MCP process could not log still keeps the page off that scale.
 Fake scales on localhost, made up items."""

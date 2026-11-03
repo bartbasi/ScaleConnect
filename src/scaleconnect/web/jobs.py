@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Runs one send at a time in the background, so a phone that locks its screen loses nothing.
 
 The library holds the caller until every scale is done. The page asks for progress instead.

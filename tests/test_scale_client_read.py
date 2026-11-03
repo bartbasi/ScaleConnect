@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """ScaleClient identity check and reads (scale.py) against the fake scale.
 
 Covers DESIGN.md "Each scale is the truth about itself", steps 1, 2 and 6, and

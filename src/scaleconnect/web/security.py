@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """PIN check, lockout and sessions for the web page. The PIN is never logged or returned."""
 
 from __future__ import annotations

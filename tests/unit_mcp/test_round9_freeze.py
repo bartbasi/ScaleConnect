@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Round 8 recheck fixes, the library and the MCP server: L1, L2, L3, L4 and L5.
 
 L1: scale_get_change on a change that left a scale out carries the freeze rule, names that scale, and never

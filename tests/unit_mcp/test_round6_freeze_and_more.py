@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Round 6 recheck: N2, N3, N4, N10 and N12. Fake scales on localhost, made up items. No Square call."""
 
 from __future__ import annotations

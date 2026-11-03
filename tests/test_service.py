@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """ScaleConnectService against fake scales on localhost.
 
 The fixtures (env, env3, make_env) are in conftest.py and tests/service_env.py.

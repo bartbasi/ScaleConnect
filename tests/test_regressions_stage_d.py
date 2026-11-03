@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Regression tests for the stage D review (research/reviews/stage-d-library.md)
 and for the "Each scale is the truth about itself" rules in docs/DESIGN.md.
 

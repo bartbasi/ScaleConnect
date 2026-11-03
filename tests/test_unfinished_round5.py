@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """What keeps a real miss on the list, what keeps a false one off it, and what the list says. Fake scales on localhost, made up items.
 
 A verified result says a scale holds what was sent. For an edit that is the scale's own record with only

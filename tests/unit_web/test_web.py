@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Tests of the web page: PIN, lockout, cross site protection, sending, results, escaping."""
 
 from __future__ import annotations

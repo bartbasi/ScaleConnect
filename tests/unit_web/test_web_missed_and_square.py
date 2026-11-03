@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """The page: what it says about Square and labels, and how a missed change reads. Fake scales, made up items."""
 
 from __future__ import annotations

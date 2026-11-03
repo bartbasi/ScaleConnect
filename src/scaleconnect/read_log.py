@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """A small log of read problems, so a failed read in a preview or compare is not lost.
 
 The web page, MCP server and command line are separate processes and share this file. Each

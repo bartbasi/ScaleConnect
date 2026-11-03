@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """What a read says when the scale sends something odd, the one repeat, and the read problem log.
 
 Fake scales on localhost, made up items. No test here really waits for the repeat: the wait goes

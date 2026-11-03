@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """A scale change is not finished until Square and the labels match, and a missed change shows as unfinished.
 
 Claude acts on this text, so these tests read the words as well as the data. Fake scales on localhost,

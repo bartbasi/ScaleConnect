@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Reads ~/.config/scaleconnect/config.toml. Addresses and secrets live only there.
 
 A scale with no explicit true write_enabled flag is not write enabled.

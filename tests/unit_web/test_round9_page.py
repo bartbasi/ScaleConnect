@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Round 8 recheck fixes, the page: M1, L2 and L4.
 
 M1: the documented way out works. A flagged scale with reads and writes turned off in the config, after a

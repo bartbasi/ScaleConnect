@@ -1,0 +1,64 @@
+ScaleConnect
+Copyright 2026 Cheese & Crackers, Inc.
+
+Designed and written by Bart Basi, with assistance from Claude.
+
+ScaleConnect is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License, version 3, as published by the
+Free Software Foundation, with the additional terms below. The full license is
+in the file LICENSE.
+
+ScaleConnect is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+Source code: https://github.com/bartbasi/ScaleConnect
+Feedback: bartbasi@gmail.com
+
+
+Additional terms (GNU General Public License, version 3, section 7)
+
+These terms apply to all of ScaleConnect: its code, web page and documents.
+
+1. Author attribution (section 7(b)). Any work based on ScaleConnect, in whole
+   or in part, must keep this author attribution, which credits Bart Basi as
+   the creator of the original ScaleConnect and Cheese & Crackers, Inc. as its
+   copyright holder:
+
+       Based on ScaleConnect, designed and written by Bart Basi, with
+       assistance from Claude. Copyright 2026 Cheese & Crackers, Inc.
+
+   (a) in its source code, by keeping this NOTICE file or its full text; and
+   (b) if the work has an interactive user interface, among the Appropriate
+       Legal Notices it displays (for example on an About, Credits or License
+       screen, or at the foot of its web page), where its users can readily
+       see it.
+
+2. Marking modified versions (sections 7(c) and 7(d)). A modified version
+   must be marked as changed from the original and must not be presented as
+   the original ScaleConnect. Beyond the attribution in term 1, the names
+   Cheese & Crackers, Inc. and Bart Basi may not be used to promote a modified
+   version or to suggest that it was made or endorsed by Cheese & Crackers,
+   Inc. or Bart Basi.
+
+3. Name (sections 7(c) and 7(e)). This license grants no rights under
+   trademark law to the name "ScaleConnect". A modified version you
+   distribute is marked as different from the original by using its own name
+   instead. Saying that your work is "based on ScaleConnect" is allowed, and
+   term 1 requires it.
+
+
+Not affiliated
+
+ScaleConnect is not affiliated with, endorsed by, or supported by Tor-rey.
+Tor-rey and ScaleLink are trademarks of Tor-rey, used here only to say which
+scales this works with. No Tor-rey software, files or captures are part of
+ScaleConnect. The protocol notes are written in our own words from what we
+observed on our own scales.
+
+
+Third party parts
+
+ScaleConnect uses FastAPI and the MCP Python SDK, under the MIT license, and
+Uvicorn, under the BSD 3-Clause license. They are installed separately with
+pip and keep their own licenses and notices.

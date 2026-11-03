@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Start the web page: python -m scaleconnect.web [--config PATH]
 
 Host and port come from [web] in the config. The page binds to that one address only.

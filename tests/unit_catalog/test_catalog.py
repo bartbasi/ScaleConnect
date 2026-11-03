@@ -1,4 +1,6 @@
-﻿"""Catalog tests. Every item here is made up. Nothing touches a scale."""
+﻿# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
+"""Catalog tests. Every item here is made up. Nothing touches a scale."""
 from __future__ import annotations
 
 import sqlite3

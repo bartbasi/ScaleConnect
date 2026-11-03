@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Shared setup for tests of the service: fake scales, a seeded catalog, a service.
 
 Everything is made up. The catalog is made by the real seed code, from a JSON

@@ -16,15 +16,14 @@ It is for a small store that runs these scales and wants to update prices and it
 
 Read this first.
 
-- ScaleConnect has not yet completed a full run on a real scale through this library. The library has been tested against a fake scale, and the message formats come from captures and tests on one test scale.
-- Delete works by overwriting the item's id with an empty placeholder named UNUSED. The old PLU stops working on the scales. It was checked by hand on the test scale.
-- An edit can change the PLU. Code always follows it, because PLU and Code are the same 4 digit number. The old PLU stops working. This was also checked by hand on the test scale.
+- ScaleConnect has been in daily use at one deli on three scales since November 2026. Every change is checked by reading the scale back. It has not been tried anywhere else.
+- The message formats come from captures and tests on one test scale. The whole library is also tested against a fake scale.
+- Delete works by overwriting the item's id with an empty placeholder named UNUSED. The old PLU stops working on the scales. It was checked by hand on all three scales.
+- An edit can change the PLU. Code always follows it, because PLU and Code are the same 4 digit number. The old PLU stops working. This was also checked by hand on all three scales.
 - The web page offers add, edit, PLU change and delete.
-- Reading items back from a scale works in the lab on one test scale. Nobody has checked yet what the scale display and printed labels show for every case.
+- Nobody has checked what the scale display and printed labels show for every unusual value.
 - Only scales marked write enabled in your config can be changed. Everything else is read only or left alone.
-- License: not chosen yet. The owner decides.
-
-The lead can update this section as things change.
+- License: GNU GPL version 3 with additional terms. See "License" below.
 
 ## What it does
 
@@ -116,4 +115,16 @@ A send from ScaleLink can overwrite what ScaleConnect set. ScaleLink's purge doe
 
 ## License
 
-Not chosen yet.
+ScaleConnect is free software under the GNU General Public License, version 3, with additional terms under section 7. The full license is in `LICENSE`, and the additional terms are in `NOTICE`.
+
+Copyright 2026 Cheese & Crackers, Inc. Designed and written by Bart Basi, with assistance from Claude.
+
+If you use this code, keep this credit, in the source and where your users can see it:
+
+    Based on ScaleConnect, designed and written by Bart Basi, with assistance from Claude. Copyright 2026 Cheese & Crackers, Inc.
+
+Mark a changed version as changed, and give it its own name. The license grants no rights to the name ScaleConnect.
+
+Every source file starts with a two line notice pointing to `LICENSE` and `NOTICE`. Please keep it.
+
+ScaleConnect uses FastAPI and the MCP Python SDK, under the MIT license, and Uvicorn, under the BSD 3-Clause license. They are installed separately and keep their own licenses.

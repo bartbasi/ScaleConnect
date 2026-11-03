@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """The launcher files for bartcc: no systemd, no real addresses, paths from the repo location."""
 
 from __future__ import annotations

@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Plain words for the page. One place, so every screen says the same thing.
 
 No em dashes and no double hyphens in any text here. Staff read it in a hurry.

@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """ScaleClient (scale.py), the write path, against the fake scale on localhost.
 
 Reads and identity are in test_scale_client_read.py. Everything here uses made

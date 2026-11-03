@@ -1,4 +1,6 @@
 #!/bin/sh
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 # Put the launcher in the menu and on the desktop, and the autostart entry in place.
 # For the user who runs it. No sudo. Safe to run again.
 set -eu

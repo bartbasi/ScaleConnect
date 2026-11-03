@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Public data models. See docs/LIBRARY.md. Others import these and do not redefine them.
 
 Prices are text, never floats. Item checks only shape. The rules on values live in service.py.

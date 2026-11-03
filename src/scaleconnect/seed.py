@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Load a seed JSON file into a new catalog.
 
 The seed file is private and lives outside the repo. It is built from

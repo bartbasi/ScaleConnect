@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Round 6 N1: while a scale may be frozen, nothing a staff member can reach on the page reads it or sends to it.
 
 Fake scales on localhost, made up items. Each test counts LP messages to the scale that stalled.

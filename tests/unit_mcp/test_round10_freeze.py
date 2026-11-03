@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Round 9 recheck fixes, the library and the MCP server: N1, N2 and N3.
 
 N1: Claude's usual flow (search, preview with no scales, apply) leaves out a scale that may be frozen, with a

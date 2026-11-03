@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """The stage G recheck's findings, against fake scales on localhost. Made up items only."""
 
 from __future__ import annotations

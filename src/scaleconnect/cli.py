@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Command line tool. Output is one JSON document on stdout. Exit codes are stable.
 
 See docs/LIBRARY.md for the commands and exit codes. Holds no scale logic.

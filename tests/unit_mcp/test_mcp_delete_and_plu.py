@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Delete, PLU changes and gap filling, as Claude sees them. Fake scales on localhost, made up items.
 
 Claude acts on this text with nobody watching, so these tests read the words as well as the data.

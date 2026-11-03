@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """The real server process, over real Streamable HTTP and real stdio, on localhost only.
 
 It starts `python -m scaleconnect.mcp_server` with a config in a temp folder that names

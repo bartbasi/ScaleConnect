@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """The fake scale's read (LP), identity (CX), timing and refusal behavior.
 
 Written from docs/PROTOCOL.md sections 2, 3, 5, 6 and 10. Made up items only.

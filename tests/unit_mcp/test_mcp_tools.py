@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """The MCP tools, through the SDK's own in memory client, against fake scales on localhost.
 
 Made up items only. Each test reads what the fake scale received, not just what the tool said.

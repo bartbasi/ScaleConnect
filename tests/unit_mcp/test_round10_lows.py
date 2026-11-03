@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Round 10 recheck, the low findings L1, L2 and L3.
 
 L1: a held no reply file that cannot be removed no longer keeps its scale flagged for good. Its note goes to

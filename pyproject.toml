@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
@@ -7,6 +9,8 @@ name = "scaleconnect"
 version = "0.1.0"
 description = "Add, edit and delete products on Tor-rey label printing scales."
 requires-python = ">=3.13"
+license = {text = "GPL-3.0-only, with additional terms under section 7. See NOTICE."}
+authors = [{name = "Bart Basi"}]
 dependencies = [
     "fastapi",
     "uvicorn",

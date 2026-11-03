@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 # ScaleConnect example config. Copy to ~/.config/scaleconnect/config.toml and edit there.
 # The real file holds addresses and secrets, so it never goes in the repo.
 # On Linux it must be private, or nothing will load it: chmod 600 ~/.config/scaleconnect/config.toml

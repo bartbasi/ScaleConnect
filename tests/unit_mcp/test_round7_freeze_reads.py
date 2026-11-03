@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Round 7 recheck, the library and the MCP server: M1, L1, L2 and L6. Fake scales on localhost, made up items."""
 
 from __future__ import annotations

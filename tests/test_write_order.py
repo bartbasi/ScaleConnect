@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """The seven step write order in docs/DESIGN.md, "Each scale is the truth about itself".
 
 1 identity, 2 read first, 3 compare (drift refusal), 4 build from the scale's own

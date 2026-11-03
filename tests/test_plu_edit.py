@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """An explicit edit may change a PLU, and Code follows it. Fake scales on localhost, made up items only.
 
 Each test reads what the fake scale received, not just what the service said.

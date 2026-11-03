@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Stage F review, H3 and the MCP side of M2, M3, M4 and M5. Fake scales on localhost, made up items.
 
 Anyone on the store network can put text in a scale record, and an invoice can carry text

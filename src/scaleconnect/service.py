@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """The library the interfaces call. See docs/LIBRARY.md and docs/DESIGN.md.
 
 All validation lives here, before anything reaches a scale, because the scale does

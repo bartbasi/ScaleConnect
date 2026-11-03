@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """ScaleConnect item list, kept in SQLite. Interface: docs/LIBRARY.md, Catalog section.
 
 This is our own copy of the products, because we may not be able to read a

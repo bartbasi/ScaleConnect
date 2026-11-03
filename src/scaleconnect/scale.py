@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """One session with one scale. The only module that opens a socket to a scale.
 
 Standard library only, plus this package's own standard library modules.

@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """Scale message building and reply parsing. No sockets. Standard library only.
 
 Only the seven named messages can be built: RI, bX01XX, GP batches, GPF0, LP, Ok (in a

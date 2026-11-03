@@ -1,3 +1,5 @@
+# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
 """driver-dev's quick tests. Localhost and the fake scale only. Made up data only."""
 
 from __future__ import annotations

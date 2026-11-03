@@ -1,4 +1,6 @@
-﻿"""Replay real captures against the fake. Skips if no captures are available.
+﻿# ScaleConnect. Copyright 2026 Cheese & Crackers, Inc.
+# Free software under the GNU GPL v3 with additional terms: see LICENSE and NOTICE.
+"""Replay real captures against the fake. Skips if no captures are available.
 
 Set SCALECONNECT_CAPTURES to a capture file or a folder of them. The
 captures are Tor-rey traffic and are never part of the repo.
