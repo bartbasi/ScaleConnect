@@ -92,13 +92,16 @@ To check it, go to another computer or a phone on the store network and open `ht
 
 ## When it starts
 
-Both autostart entries run when Bart's desktop session starts. It does not run at boot with nobody logged in. If bartcc must serve phones before anyone logs in, add one line to the user's crontab. Run `crontab -e` and add:
+Both autostart entries run only when Bart's own desktop session starts. They do not run at boot with nobody logged in, or when someone else is logged in at the screen. So after a power cut, neither the page nor the MCP server comes back by itself. To start both at boot, add two lines to Bart's crontab. Run `crontab -e` and add:
 
 ```
 @reboot sh $HOME/CCScaleApp/ScaleConnect/deploy/scaleconnect-web.sh start --no-open
+@reboot sh $HOME/CCScaleApp/ScaleConnect/deploy/scaleconnect-mcp.sh start
 ```
 
-The script is safe to run twice. It starts the page only if it is not already answering. When started with `--no-open`, it tries again every 5 seconds for about 90 seconds, in case the WiFi is not up yet.
+The scripts are safe to run twice. Each starts its server only if it is not already answering. When started this way, each tries again every 5 seconds for about 90 seconds, in case the WiFi is not up yet.
+
+Then restart bartcc once with nobody logging in, and check that the page loads from a phone.
 
 ## PLU editing
 

@@ -20,6 +20,7 @@ from scaleconnect.service import ScaleConnectService
 
 READ_TOOLS = {
     "scale_list_scales",
+    "scale_square_rules",
     "scale_search_items",
     "scale_get_item",
     "scale_compare_scales",
@@ -29,7 +30,7 @@ READ_TOOLS = {
     "scale_preview_settle_drift",
     "scale_preview_mark_orphan",
 }
-LOCAL_READ_TOOLS = {"scale_list_scales", "scale_search_items", "scale_get_item", "scale_get_change"}
+LOCAL_READ_TOOLS = {"scale_list_scales", "scale_square_rules", "scale_search_items", "scale_get_item", "scale_get_change"}
 WRITE_TOOLS = {"scale_apply_changes", "scale_resolve_interrupted_change", "scale_mark_orphan"}
 
 

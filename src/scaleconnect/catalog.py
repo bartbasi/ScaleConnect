@@ -719,6 +719,31 @@ class Catalog:
             "WHERE op IN ('import', 'add', 'revive') GROUP BY item_id) m ON m.last = h.h_id")
         return {r["item_id"] for r in rows if r["op"] != "import"}
 
+    def live_state_rows_with_status(self, statuses: Iterable[str]) -> list[dict]:
+        """State rows of live items whose last result is one of these: {"scale", "item_id", "status", "change_id", "at"}."""
+        wanted = sorted(set(statuses))
+        marks = ",".join("?" for _ in wanted)
+        return [dict(r) for r in self._conn().execute(
+            "SELECT s.scale AS scale, s.item_id AS item_id, s.status AS status, s.change_id AS change_id, s.at AS at "
+            f"FROM scale_state s JOIN items i ON i.id = s.item_id WHERE i.deleted = 0 AND s.status IN ({marks}) "
+            "ORDER BY s.item_id, s.scale", wanted)]
+
+    def live_state_rows_with_record(self) -> list[dict]:
+        """State rows of live items that hold the last record sent: {"scale", "item_id", "status", "change_id", "at", "record"}.
+        record is the 20 fields, or None if the stored text cannot be read as that. Reads no scale."""
+        out: list[dict] = []
+        for r in self._conn().execute(
+                "SELECT s.scale AS scale, s.item_id AS item_id, s.status AS status, s.change_id AS change_id, s.at AS at, s.record AS record "
+                "FROM scale_state s JOIN items i ON i.id = s.item_id WHERE i.deleted = 0 AND s.record IS NOT NULL "
+                "ORDER BY s.item_id, s.scale"):
+            row = dict(r)
+            try:
+                row["record"] = json.loads(r["record"])
+            except ValueError:
+                row["record"] = None
+            out.append(row)
+        return out
+
     def scale_state_rows(self, scale: str) -> dict[int, dict]:
         """Every state row for one scale, by id, whatever the belief."""
         return {r["item_id"]: {"status": r["status"], "belief": r["belief"], "change_id": r["change_id"], "at": r["at"]}
@@ -867,6 +892,22 @@ class Catalog:
                     "SELECT change_id, event, payload, at FROM change_log WHERE change_id = ? "
                     "ORDER BY log_id", (change_id,))]
 
+    def scale_results_in_log(self) -> list[dict]:
+        """Every result a scale gave for a change, oldest first: {"change_id", "scale", "items", "at", "may_be_frozen"}.
+        A row that cannot be read raises ValueError. Skipping it could hide a real miss, so the caller says so."""
+        out: list[dict] = []
+        for r in self._conn().execute(
+                "SELECT change_id, payload, at FROM change_log WHERE event = 'scale_result' ORDER BY log_id"):
+            payload = json.loads(r["payload"])
+            out.append({
+                "change_id": r["change_id"],
+                "scale": payload.get("scale"),
+                "items": payload.get("items", []),
+                "at": r["at"],
+                "may_be_frozen": payload.get("may_be_frozen") is True,
+            })
+        return out
+
     def list_change_ids(self, limit: int = 50) -> list[str]:
         """Newest first, by when each change first appears in the log."""
         return [r[0] for r in self._conn().execute(
@@ -885,7 +926,10 @@ class Catalog:
             "ORDER BY log_id DESC LIMIT 1", (scale,)).fetchone()
         if r is None:
             return None
-        out = json.loads(r["payload"])
+        try:
+            out = json.loads(r["payload"])
+        except ValueError:
+            return None  # a damaged row says nothing, and must not stop the list of scales
         out["change_id"] = r["change_id"]
         out["at"] = r["at"]
         return out

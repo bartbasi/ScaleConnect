@@ -97,11 +97,20 @@ After a delete, the old PLU does nothing on the scales. The page no longer finds
 
 ## Not finished work
 
-Sometimes a delete or a PLU change lands on some scales and not on others. Then the home screen shows a red "Not finished" box. The result page and the item page show it too.
+Sometimes a change lands on some scales and not on others. Then the home screen shows a red "Not finished" box. The item page says so too.
 
-The box says which scale has not confirmed the change. Until it does, assume the old PLU still works on that scale. A customer could still be sold that item by the old PLU there.
+The box says which scale has not confirmed the change. For a delete or a PLU change, assume the old PLU still works on that scale until it does. A customer could still be sold that item by the old PLU there.
 
-To finish it:
+For a new item or a price change that missed one scale, the box says "The newest change has not been confirmed". That scale may have the old price, or may not have the item. Nobody knows until it is read, so the page says it "may differ". Tap "Fix this on" and that scale. The next screen says what happened last on that scale, and has one button: "Our list is right. Put it on" that scale. Tap it only if our list has the right price. If you are not sure, call Bart. The box goes away once that scale is changed and read back, or once a check of that scale shows it matches our list.
+
+Some boxes have no button. That is on purpose.
+
+- **"Did not answer. Tell Bart."** The scale gave no reply. Do not check it or change it. The item page takes away "Check the scales now" while this shows, because a check reads every scale.
+- **"Our list did not take it."** The change may be on that scale, and our list still has the old value. Check this scale, then call Bart. Putting our list on that scale would put the old value back.
+- **A count, such as "12 items have not been confirmed".** Many items missed that scale. Tell Bart. One check of that scale clears any that match.
+- **"The list of work not finished could not be built."** Do not take this as all clear. Tell Bart.
+
+To finish a delete or a PLU change:
 
 1. Look at the scale that is named. Check what it shows.
 2. Tap "Repeat the PLU change" or "Repeat the delete".
@@ -115,9 +124,9 @@ A repeat on an old result can be out of date. If the item has been finished or r
 
 If a scale did not answer, the review says "Do not send" and the send button is off. Do not try again and again. Tell Bart.
 
-The box goes away only when every scale has confirmed. Until then, do not give the old PLU or the new PLU to another item.
+A box for a delete or a PLU change goes away only when that scale has confirmed it. Until then, do not give the old PLU or the new PLU to another item.
 
-Do not use "Fix this difference" on a scale that is in a "Not finished" box. The page does not offer it there, because it would undo the change on the other scales.
+A scale still on an old PLU has no "Fix this difference" button, because it would undo the change on the other scales. Use "Repeat the PLU change". A change that missed a scale is different. Its one button puts our list on that scale, and it does not change the other scales.
 
 ## What "UNUSED" means
 
@@ -155,9 +164,11 @@ You see one line for each scale.
 
 At the top you see one line for the whole change.
 
-- "Done. Every scale was changed and checked." means all is well.
+- "Done. Every scale was changed and checked." means the scales are right.
 - "Only partly done" means some scales have the new price and some do not. Read each line.
 - Anything else means look at the scales.
+
+This page changes the scales only. It does not change Square or the shelf labels. After a change, the page says so, even if the change only partly finished. Tell the manager so they can be updated.
 
 Never tell a customer a price is changed until every scale says "changed and checked", or you have looked at the scale yourself.
 

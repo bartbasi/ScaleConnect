@@ -240,9 +240,16 @@
     if (location.hash === '#/review') { route(); } else { location.hash = '#/review'; }
   }
 
-  /* Work that some scale has not confirmed: a delete or a PLU change. From our list, with no scale contact. */
+  /* Work that some scale has not confirmed. From our list, with no scale contact. A delete or a PLU change
+     is repeated. A change that missed one scale is settled on that scale. A card with no button asks for a person instead. */
   function unfinishedBoxes(items) {
     return (items || []).map(function (c) {
+      if (c.kind === 'missed_change') {
+        return h('div', null,
+          box('bad', 'Not finished', c.text, c.more),
+          c.button ? link('#/settle/' + encodeURIComponent(c.plu) + '/' + encodeURIComponent(c.scales[0]), c.button, 'btn second') : null);
+      }
+      if (!c.button) { return h('div', null, box('bad', 'Not finished', c.text, c.more)); }
       return h('div', null,
         box('bad', 'Not finished', c.text, c.more),
         h('button', { class: 'btn second', type: 'button', text: c.button, onclick: function () {
@@ -334,6 +341,8 @@
         }
         return box1;
       });
+      /* A check reads every scale, and one that did not answer must not be read again until someone has looked at it. */
+      var stuck = d.scales.some(function (s) { return s.missed && s.missed.kind === 'frozen'; });
       var nodes = [
         h('p', { class: 'small' }, h('a', { href: '#/', text: 'Back to search' })),
         h('div', { class: 'box' }, h('div', { class: 'big', text: it.plu }), h('div', { class: 'line', text: it.description }),
@@ -342,6 +351,7 @@
         readProblems(checked),
         h('h2', { text: 'On the scales' }), rows,
         h('div', { id: 'checkmsg' }),
+        stuck ? h('p', { class: 'plain', text: 'A check reads every scale, and one did not answer. Tell Bart.' }) :
         h('button', { class: 'btn second', type: 'button', text: 'Check the scales now', onclick: function () {
           var m = document.getElementById('checkmsg'); clear(m);
           m.appendChild(box('working', 'Working', 'Reading the scales. This can take a minute.'));
@@ -474,6 +484,25 @@
       } }));
   }
 
+  /* A change that missed this scale. Nobody may know what it holds, so nobody is asked to pick a side.
+     The only choice is our list, or calling Bart. A scale that did not answer, or a change our list did not take, has no choice at all. */
+  function renderMissedSettle(it, scale, miss, go) {
+    var top = [
+      h('p', { class: 'small' }, h('a', { href: '#/item/' + encodeURIComponent(it.plu), text: 'Back to the item' })),
+      h('h1', { text: 'Finish a change on ' + scale }),
+      h('div', { class: 'box' }, h('div', { class: 'big', text: it.plu }), h('div', { class: 'line', text: it.description }),
+        h('div', { class: 'big', text: money(it.price) })),
+      h('p', { class: 'plain', text: miss.status_text })
+    ];
+    if (miss.kind !== 'fixable') { return top.concat([box('bad', 'Check this', miss.stop_text)]); }
+    return top.concat([
+      h('p', { class: 'plain', text: miss.text }),
+      h('button', { class: 'btn', type: 'button', text: 'Our list is right. Put it on ' + scale + '.', onclick: function () { go('catalog'); } }),
+      h('p', { class: 'small', text: 'The scale will be changed, then read back to check it.' }),
+      h('p', { class: 'plain', text: 'If you are not sure, call Bart.' })
+    ]);
+  }
+
   /* settle a difference on one scale. Bart picks which side wins. */
 
   function renderSettle(plu, scale, my) {
@@ -485,6 +514,8 @@
                     back: '#/item/' + encodeURIComponent(it.plu) });
         location.hash = '#/review';
       }
+      var mine = d.scales.filter(function (s) { return s.scale === scale; })[0];
+      if (mine && mine.missed) { show(renderMissedSettle(it, scale, mine.missed, go)); return; }
       show([
         h('p', { class: 'small' }, h('a', { href: '#/item/' + encodeURIComponent(it.plu), text: 'Back to the item' })),
         h('h1', { text: 'Fix a difference' }),
@@ -787,6 +818,7 @@
       }
       (d.notes || []).forEach(function (n) { holder.appendChild(box('warn', 'Check this', n, 'Open the item and use "Fix this difference" to settle it.')); });
       pluResult(d, pid).forEach(function (n) { holder.appendChild(n); });
+      if (d.after_note) { holder.appendChild(box('warn', 'Next', d.after_note)); }
       if (d.state === 'error') { holder.appendChild(errorBox(d.error)); }
       if (d.state === 'stalled' && d.change_id) { holder.appendChild(resolveForm(d.change_id, function () { done = false; poll(); })); }
       if (d.changes && d.changes.length) {

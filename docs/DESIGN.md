@@ -91,6 +91,10 @@ Every change reports one result per scale. Use these exact statuses:
 
 A change is a full success only if every configured scale is `verified`. `accepted_not_verified` is a partial result and must be shown as such. Never call it confirmed.
 
+A full success means the scales only. Bart's rule is that a change is not finished until Square and the labels match too. No code here reaches them. Claude does it with its own connector and skill, as `docs/MCP.md` says, and the web page tells staff to tell the manager. A client cuts server instructions and tool descriptions at 4,096 characters, so the store's rules for this are in the result of a tool that contacts nothing, `scale_square_rules`, and the rule that matters most at each step is in that result's `next_step`.
+
+The list of unfinished work takes no scale's word for what `verified` means. `verified` says a scale holds what was sent, and an edit sends that scale's own record with only the asked for fields changed. So the list also shows any row whose last record sent differs from the catalog in anything but the time, whatever its status. A miss the catalog did not take has no settle offered, because a settle puts the old value back.
+
 ## Validation
 
 `service.py` validates before anything reaches a scale, because the scale does not. Price is more than 0, at most 999.99, with two decimals. PLU is exactly 4 digits. Code always equals PLU. PLUs 9001 to 9500 are held back for placeholders, so no add or edit may use one. No duplicate PLU. Id within 1 to 500. Description is not empty, has no TAB, CR or LF, and has a maximum length set in config. Use 35 until the lab finds the real limit. Characters allowed are printable ASCII until the lab shows more is safe.

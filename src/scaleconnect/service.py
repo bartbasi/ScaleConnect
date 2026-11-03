@@ -115,6 +115,24 @@ _RELOAD_DUMP_NOTE = "not_taken_no_read_before_a_reload"
 RELOAD_READ_MAX_AGE = timedelta(minutes=15)
 _FIELD_WORDS = {"field6": "field 6", "fields_7_12": "sold by, tax and other settings (fields 7 to 12)", "fields_14_20": "other settings (fields 14 to 20)"}
 
+# What a change ended as on a scale, for what is unfinished. Something went out, so the scale may hold anything:
+_MISSED_LANDED = frozenset({ScaleStatus.VERIFIED.value, ScaleStatus.ACCEPTED_NOT_VERIFIED.value})
+_MISSED_UNSETTLED = frozenset({ScaleStatus.UNKNOWN.value, ScaleStatus.MISMATCH.value})
+_MISSED_MAY_HOLD = frozenset({ScaleStatus.ACCEPTED_NOT_VERIFIED.value}) | _MISSED_UNSETTLED
+# Nothing went out, so the scale is behind only if the catalog took the change. Writes off for a scale
+# is a person's choice, and a change that left a scale out with scales is too, so neither is here.
+_MISSED_NOT_SENT = frozenset({
+    ScaleStatus.REJECTED.value,
+    ScaleStatus.READ_FAILED.value,
+    ScaleStatus.UNREACHABLE.value,
+    ScaleStatus.WRONG_SCALE.value,
+    ScaleStatus.DRIFT_REFUSED.value,
+    ScaleStatus.NOT_AVAILABLE.value,
+    ITEM_NOT_SENT,
+})
+
+_LIST_FAILED = "list_failed"  # a row that says the list of unfinished work could not be built
+
 EVENT_STARTED = "started"
 EVENT_SCALE_RESULT = "scale_result"
 EVENT_FINISHED = "finished"
@@ -124,6 +142,12 @@ _CHANGE_EVENTS = (EVENT_STARTED, EVENT_BACKUP_FAILED)
 
 def _printable(value: str) -> bool:
     return all(0x20 <= ord(ch) <= 0x7E for ch in value)
+
+
+def _note_repeat(read: Any, name: str, repeats: set[str] | None) -> None:
+    """The scale needed a second read. Only that fact goes on: no words from the read, which can quote a record."""
+    if repeats is not None and getattr(read, "repeated", False) is True:
+        repeats.add(name)
 
 
 def _real_records(table: Mapping[int, Item]) -> dict[int, Item]:
@@ -588,6 +612,7 @@ class ScaleConnectService:
         drift: list[Drift] = []
         scales_read: list[str] = []
         fills: dict[str, list[int]] = {}
+        repeats: set[str] = set()
 
         if not errors:
             configured = {s.name for s in self._config.scales}
@@ -618,7 +643,7 @@ class ScaleConnectService:
                         )
                     )
             if read_scales:
-                drift, scales_read, fills = self._read_for_preview(targets, plans, warnings)
+                drift, scales_read, fills = self._read_for_preview(targets, plans, warnings, repeats)
 
         scale_names = tuple(s.name for s in targets)
         if errors:
@@ -660,6 +685,7 @@ class ScaleConnectService:
             errors=(),
             drift=tuple(drift),
             scales_read=tuple(scales_read),
+            scales_read_repeated=tuple(name for name in scale_names if name in repeats),
         )
 
     def _deleted_held(self) -> list[dict]:
@@ -933,7 +959,7 @@ class ScaleConnectService:
         return None
 
     def _read_for_preview(
-        self, targets: Sequence[ScaleConfig], plans: Sequence[_Plan], warnings: list[PreviewWarning]
+        self, targets: Sequence[ScaleConfig], plans: Sequence[_Plan], warnings: list[PreviewWarning], repeats: set[str] | None = None
     ) -> tuple[list[Drift], list[str], dict[str, list[int]]]:
         drift: list[Drift] = []
         read_names: list[str] = []
@@ -946,7 +972,7 @@ class ScaleConnectService:
                 if scale.write_enabled is not True and scale.read_enabled is not True:
                     continue
                 client = self._scale_factory(scale, self._settings, sleep=self._sleep)
-                outcome = self._identify_and_read(scale, client, writes)
+                outcome = self._identify_and_read(scale, client, writes, repeats)
                 if isinstance(outcome, ScaleResult):
                     warnings.append(PreviewWarning("scale_read_failed", outcome.message, may_be_frozen=outcome.may_be_frozen))
                     continue
@@ -1093,7 +1119,7 @@ class ScaleConnectService:
                 found.append(Drift(name, "delete_may_have_landed", difference.item_id, difference.plu, {}, record, words, _drift_token(name, difference.item_id, record)))
         return found
 
-    def _identify_and_read(self, scale: ScaleConfig, client: Any, writes: Sequence[_Plan]) -> Any:
+    def _identify_and_read(self, scale: ScaleConfig, client: Any, writes: Sequence[_Plan], repeats: set[str] | None = None) -> Any:
         """Steps 1 and 2. Returns what the scale holds, by id, or a ScaleResult saying why not.
 
         It reads the whole table once, because any write must find its PLU under any other id, and
@@ -1107,6 +1133,7 @@ class ScaleConnectService:
             result = self._uniform_result(name, identity.status, identity.message, differences)
             return replace(result, may_be_frozen=identity.may_be_frozen)
         read = client.read_items(None)
+        _note_repeat(read, name, repeats)
         if not read.ok:
             status = read.status or ScaleStatus.READ_FAILED
             message = f"{read.message} Nothing was written to this scale."
@@ -1374,7 +1401,10 @@ class ScaleConnectService:
         results: list[ScaleResult] = []
         sent_records: dict[str, dict[int, Item]] = {}
         for scale in targets:
-            result, sent = self._apply_to_scale(scale, stamped, stamp, tokens, payload.get("fills", {}).get(scale.name, ()))
+            repeats: set[str] = set()
+            result, sent = self._apply_to_scale(scale, stamped, stamp, tokens, payload.get("fills", {}).get(scale.name, ()), repeats)
+            if scale.name in repeats:
+                result = replace(result, read_repeated=True)
             results.append(result)
             sent_records[scale.name] = sent
             # Logged at once, so a crash on a later scale cannot lose this reply.
@@ -1563,7 +1593,7 @@ class ScaleConnectService:
     # ------------------------------------------------------------ sending
 
     def _apply_to_scale(
-        self, scale_then: ScaleConfig, plans: Sequence[_Plan], stamp: str, tokens: frozenset[str], seen_fills: Sequence[int] = ()
+        self, scale_then: ScaleConfig, plans: Sequence[_Plan], stamp: str, tokens: frozenset[str], seen_fills: Sequence[int] = (), repeats: set[str] | None = None
     ) -> tuple[ScaleResult, dict[int, Item]]:
         """The seven steps for one scale. A problem here never stops the next scale."""
         name = scale_then.name
@@ -1571,7 +1601,7 @@ class ScaleConnectService:
         scale = self._current_scale(name) or replace(scale_then, write_enabled=False, read_enabled=False)
         if any(p.difference.action == _SETTLE_ACCEPT for p in plans):
             try:
-                return self._accept_from_scale(scale, plans[0], tokens)
+                return self._accept_from_scale(scale, plans[0], tokens, repeats)
             except (NotWriteEnabled, NotReadEnabled):
                 message = f"{name}: contact is not enabled for this scale. Nothing changed."
                 return self._uniform_result(name, ScaleStatus.SKIPPED_NOT_WRITE_ENABLED, message, differences), {}
@@ -1589,7 +1619,7 @@ class ScaleConnectService:
                 {},
             )
         try:
-            return self._apply_steps(scale, plans, stamp, tokens, seen_fills)
+            return self._apply_steps(scale, plans, stamp, tokens, seen_fills, repeats)
         except (NotWriteEnabled, NotReadEnabled):
             return (
                 self._uniform_result(
@@ -1619,12 +1649,12 @@ class ScaleConnectService:
                 {},
             )
 
-    def _accept_from_scale(self, scale: ScaleConfig, plan: _Plan, tokens: frozenset[str]) -> tuple[ScaleResult, dict[int, Item]]:
+    def _accept_from_scale(self, scale: ScaleConfig, plan: _Plan, tokens: frozenset[str], repeats: set[str] | None = None) -> tuple[ScaleResult, dict[int, Item]]:
         """Settling toward the scale. Identity and read as usual, and nothing is written to it."""
         name = scale.name
         difference = plan.difference
         client = self._scale_factory(scale, self._settings, sleep=self._sleep)
-        held = self._identify_and_read(scale, client, [plan])
+        held = self._identify_and_read(scale, client, [plan], repeats)
         if isinstance(held, ScaleResult):
             return held, {}
         current = _real_records(held).get(difference.item_id)
@@ -1662,7 +1692,7 @@ class ScaleConnectService:
         return Drift(name, "differs", item_id, wanted.plu, fields, current, f"{name} differs at id {item_id}: {listed}.", token)
 
     def _apply_steps(
-        self, scale: ScaleConfig, plans: Sequence[_Plan], stamp: str, tokens: frozenset[str], seen_fills: Sequence[int] = ()
+        self, scale: ScaleConfig, plans: Sequence[_Plan], stamp: str, tokens: frozenset[str], seen_fills: Sequence[int] = (), repeats: set[str] | None = None
     ) -> tuple[ScaleResult, dict[int, Item]]:
         name = scale.name
         writes = [p for p in plans if p.difference.action in _WRITE_ACTIONS]
@@ -1671,7 +1701,7 @@ class ScaleConnectService:
 
         # Steps 1 and 2. The first write also needs the whole table, for rule 5.
         need_dump = self._read_marker("dump", name) is None
-        table = self._identify_and_read(scale, client, writes)
+        table = self._identify_and_read(scale, client, writes, repeats)
         if isinstance(table, ScaleResult):
             return table, {}
         if need_dump:
@@ -1770,6 +1800,7 @@ class ScaleConnectService:
         checks_old_plu = [p for p in writes if p.moves_plu or p.difference.action == _DELETE]
         limit = None if checks_old_plu else max(sent_ids, default=0)
         readback = client.read_items(limit, patient=True) if sent_ids and not lost else None
+        _note_repeat(readback, name, repeats)
         if readback is not None and readback.ok:
             self._save_reads(name, readback)
         mismatches: list[Drift] = []
@@ -2217,8 +2248,9 @@ class ScaleConnectService:
             read = client.read_items(up_to)
         except Exception as exc:
             return ScaleRead(name, "read_failed", f"{name}: the read failed ({exc.__class__.__name__}).")
+        second_try = getattr(read, "repeated", False) is True
         if not read.ok:
-            return ScaleRead(name, (read.status or ScaleStatus.READ_FAILED).value, read.message, may_be_frozen=read.may_be_frozen)
+            return ScaleRead(name, (read.status or ScaleStatus.READ_FAILED).value, read.message, may_be_frozen=read.may_be_frozen, read_repeated=second_try)
         self._save_reads(name, read)
         catalog = {i.id: i for i in self._catalog.list_items()}
         everything = not wanted_plus and not wanted_ids
@@ -2241,6 +2273,7 @@ class ScaleConnectService:
             read_at=self._now_text(),
             complete=read.complete,
             records=tuple(records),
+            read_repeated=second_try,
         )
 
     @staticmethod
@@ -2278,6 +2311,7 @@ class ScaleConnectService:
         """
         now = self._clock()
         created_at = now.isoformat(timespec="seconds")
+        repeats: set[str] = set()
 
         def refused(
             code: str, message: str, field: str | None = None, diffs: tuple[Difference, ...] = (), drift: tuple[Drift, ...] = (), frozen: bool = False
@@ -2293,6 +2327,7 @@ class ScaleConnectService:
                 warnings=(),
                 errors=(PreviewError(code, message, 0, field, frozen),),
                 drift=drift,
+                scales_read_repeated=tuple(sorted(repeats)),
             )
 
         if take not in ("scale", "catalog"):
@@ -2316,7 +2351,7 @@ class ScaleConnectService:
         probe = _Plan(Difference(0, action, item.id, item.plu, {}, item, item), {})
         client = self._scale_factory(target, self._settings, sleep=self._sleep)
         with _apply_lock(self._lock_path):
-            table = self._identify_and_read(target, client, [probe])
+            table = self._identify_and_read(target, client, [probe], repeats)
         if isinstance(table, ScaleResult):
             return refused("settle_read_failed", table.message, "scale", frozen=table.may_be_frozen)
         held = _real_records(table)
@@ -2429,6 +2464,7 @@ class ScaleConnectService:
             errors=(),
             drift=drift,
             scales_read=(scale,),
+            scales_read_repeated=tuple(sorted(repeats)),
         )
 
     def _compare_one(self, scale: ScaleConfig) -> ScaleComparison:
@@ -2443,8 +2479,9 @@ class ScaleConnectService:
             read = client.read_items(None)
         except Exception as exc:
             return ScaleComparison(name, "read_failed", f"{name}: the read failed ({exc.__class__.__name__}).")
+        second_try = getattr(read, "repeated", False) is True
         if not read.ok:
-            return ScaleComparison(name, (read.status or ScaleStatus.READ_FAILED).value, read.message, may_be_frozen=read.may_be_frozen)
+            return ScaleComparison(name, (read.status or ScaleStatus.READ_FAILED).value, read.message, may_be_frozen=read.may_be_frozen, read_repeated=second_try)
         self._save_reads(name, read)
         catalog = {i.id: i for i in self._catalog.list_items()}
         differences: list[Drift] = []
@@ -2471,6 +2508,7 @@ class ScaleConnectService:
             items_read=len(read.items),
             read_at=self._now_text(),
             differences=tuple(differences),
+            read_repeated=second_try,
         )
 
     def mark_orphans_from_read(
@@ -2524,36 +2562,261 @@ class ScaleConnectService:
         )
 
     def list_unfinished(self) -> list[UnfinishedWork]:
-        """Deletes and PLU changes some scale has not confirmed, with the change to preview to finish each.
+        """Changes some scale has not confirmed, with what to preview to finish each.
 
-        From the catalog, with no scale contact, so it says what may be so. A read shows what is.
+        Deletes, PLU changes, and any other change a scale may have missed, or a last record sent that
+        differs from the catalog. From the catalog and its log, with no scale contact, so it says what
+        may be so. A read shows what is. If part of it cannot be built, the list says so in a row of
+        kind list_failed, because an empty list must never stand in for one nobody could make.
         """
         names = [s.name for s in self._config.scales]
         out: list[UnfinishedWork] = []
-        for row in self._catalog.deleted_still_held():
-            if row["scale"] in names:
-                plu = row["plu"]
-                words = f"{row['scale']} may still sell PLU {plu}, because a delete of it has not been confirmed there. Repeat the delete to finish it."
-                repeat = {"action": "delete", "target_id": row["item_id"]}
-                out.append(UnfinishedWork(row["scale"], "delete", row["item_id"], plu, (plu,), repeat, words))
-        moves: dict[tuple[str, int], list[dict]] = {}
-        for row in self._catalog.all_plu_moves():
-            moves.setdefault((row["scale"], row["item_id"]), []).append(row)
-        for (scale, item_id), rows in moves.items():
-            item = self._catalog.get_by_id(item_id)
-            old_plus = tuple(sorted(r["old_plu"] for r in rows if item is not None and r["old_plu"] != item.plu))
-            if scale in names and old_plus:
-                listed = " or ".join(old_plus)
-                tried = [r["old_plu"] for r in rows if r["trying"] and r["old_plu"] != item.plu]
-                if tried:
-                    # The catalog has not moved, so finishing it means asking for the new PLU again.
-                    words = f"{scale} may have taken PLU {listed} at id {item_id}, and the catalog still has PLU {item.plu}, because a reply was lost. A read shows which. Repeat that edit to finish it."
-                    repeat = {"action": "edit", "target_plu": item.plu, "plu": tried[-1]}
-                else:
-                    words = f"{scale} may still be on PLU {listed} at id {item_id}, and the catalog has PLU {item.plu}. Repeat that edit to finish it."
-                    repeat = {"action": "edit", "target_plu": item.plu, "plu": item.plu}
-                out.append(UnfinishedWork(scale, "plu_change", item_id, item.plu, old_plus, repeat, words))
+        frozen: set[tuple[str, int]] = set()
+        failed: str | None = None
+        try:
+            for row in self._catalog.deleted_still_held():
+                if row["scale"] in names:
+                    plu = row["plu"]
+                    words = f"{row['scale']} may still sell PLU {plu}, because a delete of it has not been confirmed there. Repeat the delete to finish it."
+                    repeat = {"action": "delete", "target_id": row["item_id"]}
+                    out.append(UnfinishedWork(row["scale"], "delete", row["item_id"], plu, (plu,), repeat, words))
+            moves: dict[tuple[str, int], list[dict]] = {}
+            for row in self._catalog.all_plu_moves():
+                moves.setdefault((row["scale"], row["item_id"]), []).append(row)
+            for (scale, item_id), rows in moves.items():
+                item = self._catalog.get_by_id(item_id)
+                old_plus = tuple(sorted(r["old_plu"] for r in rows if item is not None and r["old_plu"] != item.plu))
+                if scale in names and old_plus:
+                    listed = " or ".join(old_plus)
+                    tried = [r["old_plu"] for r in rows if r["trying"] and r["old_plu"] != item.plu]
+                    if tried:
+                        # The catalog has not moved, so finishing it means asking for the new PLU again.
+                        words = f"{scale} may have taken PLU {listed} at id {item_id}, and the catalog still has PLU {item.plu}, because a reply was lost. A read shows which. Repeat that edit to finish it."
+                        repeat = {"action": "edit", "target_plu": item.plu, "plu": tried[-1]}
+                    else:
+                        words = f"{scale} may still be on PLU {listed} at id {item_id}, and the catalog has PLU {item.plu}. Repeat that edit to finish it."
+                        repeat = {"action": "edit", "target_plu": item.plu, "plu": item.plu}
+                    out.append(UnfinishedWork(scale, "plu_change", item_id, item.plu, old_plus, repeat, words))
+        except Exception as exc:
+            failed = exc.__class__.__name__
+        try:
+            missed, frozen = self._missed_changes(names, {(u.scale, u.item_id) for u in out})
+            out.extend(missed)
+        except Exception as exc:
+            failed = exc.__class__.__name__
+        try:
+            out.extend(self._records_that_differ(names, {(u.scale, u.item_id) for u in out}))
+        except Exception as exc:
+            failed = exc.__class__.__name__
+        # One row of a scale that gave no reply is enough. Going back for another row reads that same scale.
+        stuck = {u.scale for u in out if (u.scale, u.item_id) in frozen}
+        out = [self._as_frozen(u) if u.scale in stuck else u for u in out]
+        if failed is not None:
+            words = f"The list of unfinished work could not be built ({failed}), so it may leave things out. Do not read it as all clear."
+            out.append(UnfinishedWork("", _LIST_FAILED, 0, "", (), {}, words))
         return out
+
+    @staticmethod
+    def _as_frozen(work: UnfinishedWork) -> UnfinishedWork:
+        """The row's own words would say to settle or repeat, and either one reads that scale."""
+        plu_words = f"PLU {work.plu}" if _PLU.fullmatch(work.plu) else "the item"
+        words = (
+            f"{work.scale} has not confirmed a change to {plu_words} at id {work.item_id}. It gave no reply on a logged change, so it may have frozen. "
+            "Do not read it until a person says it has been checked."
+        )
+        return replace(work, may_be_frozen=True, message=words)
+
+    def _missed_changes(self, names: Sequence[str], listed: set[tuple[str, int]]) -> tuple[list[UnfinishedWork], set[tuple[str, int]]]:
+        """Live items a scale may not hold as the catalog lists them, because a change did not end verified there.
+        Also which rows, of these or of those already listed, came from a scale that gave no reply.
+
+        A row in scale_state holds only the last result, and a refusal on a later change that moved
+        nothing overwrites a real miss. So the row says where to look, and the log says what was missed.
+        A read of the scale made after that change, showing what the catalog lists, ends it.
+        """
+        rows = [
+            r for r in self._catalog.live_state_rows_with_status(_MISSED_MAY_HOLD | _MISSED_NOT_SENT)
+            if r["scale"] in names and (r["scale"], r["item_id"]) not in listed
+        ]
+        if not rows and not listed:
+            return [], set()
+        pending, frozen = self._pending_misses(rows, listed)
+        out: list[UnfinishedWork] = []
+        for row in rows:
+            scale, item_id = row["scale"], row["item_id"]
+            miss = pending.get((scale, item_id))
+            item = self._catalog.get_by_id(item_id)
+            if miss is None or item is None or self._read_since_matches(scale, item, miss["at"]):
+                continue
+            plu_words = f"PLU {item.plu}" if _PLU.fullmatch(item.plu) else "the item"
+            if miss["action"] == _DELETE:
+                # Nothing landed for certain, or the item would have left the catalog. It is still listed there.
+                words = f"{scale} may or may not have deleted {plu_words} at id {item_id}, because a delete of it has not been confirmed there. Repeat the delete to finish it."
+                out.append(UnfinishedWork(scale, _DELETE, item_id, item.plu, (item.plu,), {"action": _DELETE, "target_id": item_id}, words, miss["status"], miss["change_id"], at=miss["at"] or ""))
+                continue
+            if miss["took"]:
+                words = (
+                    f"{scale} may not hold the newest change to {plu_words} at id {item_id}. That change ended as {miss['status']} there. "
+                    "Settle this scale to the catalog to finish it. A read also shows if it already matches."
+                )
+                repeat = {"tool": "scale_preview_settle_drift", "scale": scale, "take": "catalog", "plu": item.plu}
+            else:
+                # A settle would put back what the person asked to change, so no repeat is offered for it.
+                words = (
+                    f"A change to {plu_words} at id {item_id} ended as {miss['status']} on {scale}. The catalog did not take this change. {scale} may hold the new value. "
+                    "A settle to the catalog puts the old value back. To finish the change, make a new preview of it."
+                )
+                repeat = {}
+            out.append(UnfinishedWork(scale, "missed_change", item_id, item.plu, (), repeat, words, miss["status"], miss["change_id"], catalog_took_it=miss["took"], at=miss["at"] or ""))
+        return out, frozen
+
+    def _records_that_differ(self, names: Sequence[str], listed: set[tuple[str, int]]) -> list[UnfinishedWork]:
+        """Rows whose last record sent differs from the catalog in anything but the time, whatever the status.
+
+        A verified result says the scale holds what was sent. For an edit that is the scale's own record
+        with only the asked for fields changed, so it can be verified and still differ from the catalog.
+        A scale with writes off is a person's choice and stays out. A read after that record went, showing
+        what the catalog lists but for the time, ends it. No record stored means nothing to compare, so
+        that row says nothing here. Neither does a placeholder, which is an empty slot and not a record.
+        """
+        writes_on = {s.name for s in self._current_scales() if s.write_enabled is True}
+        items = {i.id: i for i in self._catalog.list_items()}
+        out: list[UnfinishedWork] = []
+        for row in self._catalog.live_state_rows_with_record():
+            scale, item_id = row["scale"], row["item_id"]
+            item = items.get(item_id)
+            if scale not in names or scale not in writes_on or (scale, item_id) in listed or item is None:
+                continue
+            try:
+                record = Item.from_fields(row["record"])
+            except (TypeError, ValueError):
+                continue
+            if is_placeholder(record):
+                continue
+            differs = tuple(name for name in _field_differences(item, record) if name != "timestamp")
+            if not differs or self._read_since_matches(scale, item, row["at"], but_time=True):
+                continue
+            plu_words = f"PLU {item.plu}" if _PLU.fullmatch(item.plu) else "the item"
+            fields = ", ".join(_FIELD_WORDS.get(name, name) for name in differs)
+            words = (
+                f"{scale} may differ from the catalog for {plu_words} at id {item_id}, in {fields}. The last record sent there did not bring it to the catalog's record. "
+                "Settle this scale to the catalog to end it. A read also shows if it already matches."
+            )
+            repeat = {"tool": "scale_preview_settle_drift", "scale": scale, "take": "catalog", "plu": item.plu}
+            out.append(UnfinishedWork(scale, "missed_change", item_id, item.plu, (), repeat, words, row["status"], row["change_id"], differs_in=differs, at=row["at"]))
+        return out
+
+    @staticmethod
+    def _changes_in_log(events: Sequence[Mapping[str, Any]], wanted: set[int]) -> dict[str, dict[int, dict[str, Any]]]:
+        """Change id, in log order, to item id, to what that change did to the item on each scale."""
+        changes: dict[str, dict[int, dict[str, Any]]] = {}
+        for event in events:
+            for item in event["items"]:
+                if item.get("item_id") in wanted:
+                    entry = changes.setdefault(event["change_id"], {}).setdefault(item["item_id"], {"action": item.get("action"), "statuses": {}, "ats": {}, "frozen": {}})
+                    entry["statuses"][event["scale"]] = item.get("status")
+                    # Scales go one after another, so each has its own time. The read before a write is older than this.
+                    entry["ats"][event["scale"]] = event["at"]
+                    entry["frozen"][event["scale"]] = event.get("may_be_frozen") is True
+        return changes
+
+    @staticmethod
+    def _catalog_moved(entry: Mapping[str, Any]) -> bool:
+        """Did the catalog take this change? A scale that was not sent it is only behind if so.
+        A settle that takes the scale's record is left out on purpose. It names one scale, so it cannot have
+        landed and also not been sent there, and that scale's own status says all there is."""
+        statuses = entry["statuses"].values()
+        landed = any(s in _MISSED_LANDED for s in statuses)
+        unsettled = any(s in _MISSED_UNSETTLED for s in statuses)
+        return (entry["action"] == "add" and (landed or unsettled)) or (entry["action"] == "edit" and landed)
+
+    def _pending_misses(
+        self, rows: Sequence[Mapping[str, Any]], also: set[tuple[str, int]] = frozenset()
+    ) -> tuple[dict[tuple[str, int], dict[str, Any]], set[tuple[str, int]]]:
+        """Which of these rows are still a miss, going through the log's scale results in order.
+        Also which of these rows and of also have a result with no reply that nothing has ended since."""
+        scales_of: dict[int, set[str]] = {}
+        for r in rows:
+            scales_of.setdefault(r["item_id"], set()).add(r["scale"])
+        for scale, item_id in also:
+            scales_of.setdefault(item_id, set()).add(scale)
+        changes = self._changes_in_log(self._catalog.scale_results_in_log(), set(scales_of))
+        pending: dict[tuple[str, int], dict[str, Any]] = {}
+        frozen: set[tuple[str, int]] = set()
+        logged: set[tuple[str, int]] = set()
+        for change_id, items in changes.items():
+            for item_id, entry in items.items():
+                logged.add((change_id, item_id))
+                action = entry["action"]
+                moved = self._catalog_moved(entry)
+                for scale in scales_of[item_id]:
+                    key = (scale, item_id)
+                    own = entry["statuses"].get(scale)
+                    if action == "add" and moved:
+                        pending.pop(key, None)  # a new item on this id, so older misses are about something else
+                        frozen.discard(key)
+                    if own == ScaleStatus.VERIFIED.value:
+                        pending.pop(key, None)
+                        frozen.discard(key)
+                    elif own in _MISSED_MAY_HOLD or (own in _MISSED_NOT_SENT and moved):
+                        # Only an edit can leave a scale ahead of the catalog. A settle or a reload is the catalog's own record.
+                        pending[key] = {"action": action, "status": own, "change_id": change_id, "at": entry["ats"][scale], "took": action != "edit" or moved}
+                    if entry["frozen"].get(scale):
+                        frozen.add(key)
+        for r in rows:
+            # The row's change is not in the log, so the row is all there is. It says this scale was not confirmed.
+            if (r["change_id"], r["item_id"]) not in logged:
+                pending.setdefault((r["scale"], r["item_id"]), {"action": None, "status": r["status"], "change_id": r["change_id"], "at": r["at"], "took": True})
+        return pending, frozen
+
+    def settle_ended_a_miss(self, record: ChangeRecord) -> bool:
+        """A settle that put the catalog's record on a scale, where an earlier change had moved the catalog
+        and left that scale behind. Square and the labels may have been waiting on it. Reads no scale.
+        A log that cannot be read says True: the words that follow only ask the person."""
+        pushed = {
+            (result.scale, item.item_id)
+            for result in record.scale_results
+            for item in result.items
+            if item.action == _SETTLE_PUSH and item.status == ScaleStatus.VERIFIED.value
+        }
+        if not pushed:
+            return False
+        try:
+            changes = self._changes_in_log(self._catalog.scale_results_in_log(), {item_id for _, item_id in pushed})
+        except Exception:
+            return True
+        waiting: set[tuple[str, int]] = set()
+        for change_id, items in changes.items():
+            if change_id == record.change_id:
+                break
+            for item_id, entry in items.items():
+                moved = self._catalog_moved(entry)
+                for scale, wanted_id in pushed:
+                    if wanted_id != item_id:
+                        continue
+                    own = entry["statuses"].get(scale)
+                    if entry["action"] in (_SETTLE_PUSH, _RELOAD) and own == ScaleStatus.VERIFIED.value:
+                        waiting.discard((scale, item_id))
+                    elif moved and own != ScaleStatus.VERIFIED.value:
+                        waiting.add((scale, item_id))
+        return bool(waiting & pushed)
+    def _read_since_matches(self, scale: str, item: Item, since: str | None, *, but_time: bool = False) -> bool:
+        """The last read of this scale came after that change, and shows what the catalog lists at this id.
+        but_time leaves the time out of what must match.
+
+        Times are to the second, so a read in the same second does not count. That is the read back of
+        the change itself. A real read of a scale takes far longer than a second.
+        """
+        read = self._catalog.last_reads(item.id).get(scale)
+        if read is None or read["record"] is None:
+            return False
+        shown = read["record"].replace(timestamp=item.timestamp) if but_time else read["record"]
+        if shown.to_fields() != item.to_fields():
+            return False
+        try:
+            return datetime.fromisoformat(read["at"]) > datetime.fromisoformat(since)
+        except (TypeError, ValueError):
+            return False
 
     def list_orphans(self) -> dict[int, list[str]]:
         """Ids recorded as orphans, with the scales that hold them."""

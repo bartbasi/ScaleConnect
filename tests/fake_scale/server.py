@@ -17,8 +17,8 @@ What it copies from the real scale:
                       block. LP00End at the end. Anything but Ok makes the scale
                       send the same block again with a longer chain. If the
                       client closes mid read the scale sends the block again,
-                      then LP00End
-  wrong check char    the scale closes the connection with no reply
+                      then LP00End, then closes. slow_to_close changes that
+  wrong check char   the scale closes the connection with no reply
   after GPF0          if the session had an accepted record, the scale does not
                       answer new connections for about 10.5 seconds
   long waits          on a write, one batch about every 5.6 seconds waits much
@@ -268,6 +268,11 @@ class FakeScale:
         self.freezes = 0
         self.end_read_after_blocks: int | None = None
         self.end_read_every_time = True
+        self._resend_at_id: int | None = None
+        self._resends_left: int | None = 0
+        self._hangup_wait = 0.0
+        self._hangup_talks = True
+        self._hangup_times: int | None = 0
 
         self._lock = threading.RLock()
         self._items: dict[int, Record] = {}
@@ -514,6 +519,42 @@ class FakeScale:
             self.end_read_after_blocks = after_blocks
             self.end_read_every_time = every_time
 
+    def resend_block_at_id(self, item_id: int, times: int | None = 1) -> None:
+        """The Ok after the block holding this id gets that same block again, with the longer
+        chain, not the next one. Nobody has seen why a real scale does this, only that one
+        seemed to. See PROTOCOL.md section 3. times counts across reads, None means every time."""
+        with self._lock:
+            self._resend_at_id = item_id
+            self._resends_left = times
+
+    def _resend_now(self, conn: _Conn) -> bool:
+        with self._lock:
+            if self._resend_at_id is None or self._resends_left == 0 or conn.block_at >= len(conn.blocks):
+                return False
+            if not any(int(record[0]) == self._resend_at_id for record in conn.blocks[conn.block_at]):
+                return False
+            if self._resends_left is not None:
+                self._resends_left -= 1
+            return True
+
+    def slow_to_close(self, seconds: float = float("inf"), *, talks: bool = True, times: int | None = 1) -> None:
+        """When the client hangs up, wait this long before closing. The default never closes,
+        which is what a real freeze looks like: the FIN goes unanswered. With talks, the block
+        and LP00End still go out first, so bytes alone do not mean it closed. times counts
+        hang ups in the reading state, None means every time."""
+        with self._lock:
+            self._hangup_wait = seconds
+            self._hangup_talks = talks
+            self._hangup_times = times
+
+    def _take_slow_close(self, conn: _Conn) -> tuple[float, bool]:
+        with self._lock:
+            if conn.state != "reading" or self._hangup_times == 0:
+                return 0.0, True
+            if self._hangup_times is not None:
+                self._hangup_times -= 1
+            return self._hangup_wait, self._hangup_talks
+
     def reset_next_connections(self, n: int = 1) -> None:
         """Accept the next n connections and reset them at once."""
         with self._lock:
@@ -674,7 +715,10 @@ class FakeScale:
                 except OSError:
                     break
                 if not data:
-                    self._client_closed(conn)
+                    wait, talks = self._take_slow_close(conn)
+                    if talks:
+                        self._client_closed(conn)
+                    self._stop.wait(wait if wait != float("inf") else None)
                     break
                 with self._lock:
                     self.bytes_received += len(data)
@@ -952,10 +996,13 @@ class FakeScale:
             conn.resends = 0
             reply = self._block_reply(conn)
         elif kind == "Ok":
-            conn.block_at += 1
-            conn.resends = 0
-            if conn.block_at >= len(conn.blocks):
-                conn.state = "read_done"
+            if self._resend_now(conn):
+                conn.resends += 1
+            else:
+                conn.block_at += 1
+                conn.resends = 0
+                if conn.block_at >= len(conn.blocks):
+                    conn.state = "read_done"
             reply = self._block_reply(conn)
         elif kind == "GP":
             records = self._parse_gp(conn, text)

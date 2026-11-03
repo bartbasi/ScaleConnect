@@ -12,6 +12,10 @@ batch_size = 5                    # records in each GP batch. 5 is the most allo
 read_pace_seconds = 0.2           # pause between messages in a read
 read_back_window_seconds = 45     # how long to keep trying to read back after a write
 read_back_retry_seconds = 2
+# Read once more if blocks came out of order. Off by default. A whole read 5 seconds after a
+# stopped read passed 20 of 20 on the test scale. A real repeat has not run on any scale.
+read_repeat_enabled = false
+read_repeat_wait_seconds = 5      # wait before that one repeat
 description_max_length = 35
 preview_ttl_seconds = 900
 
@@ -23,6 +27,7 @@ preview_ttl_seconds = 900
 # or the first write refuses to run. Use the second only on a PC that does not have that file.
 # scalelink_db_path = "/path/to/scalelink/database"
 # scalelink_db_copy = "not_available_here"
+# read_problem_log = "~/.local/state/scaleconnect/read-problems.log"
 
 [auth]
 pin = "change-me"

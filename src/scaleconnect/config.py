@@ -62,6 +62,8 @@ class Settings:
     read_pace_seconds: float = 0.2
     read_back_window_seconds: float = 45.0
     read_back_retry_seconds: float = 2.0
+    read_repeat_enabled: bool = False  # off until a repeat at this wait has been tested on the real test scale
+    read_repeat_wait_seconds: float = 5.0  # before the one repeat of a read whose blocks came out of order
     description_max_length: int = 35
     preview_ttl_seconds: int = 900
     state_dir: Path = field(default_factory=_default_state_dir)
@@ -69,6 +71,7 @@ class Settings:
     backup_dir: Path | None = None
     scalelink_db_path: Path | None = None
     scalelink_db_copy: str | None = None
+    read_problem_log: Path | None = None  # None means the default. See read_log.path_for
 
     def __post_init__(self) -> None:
         state_dir = Path(self.state_dir).expanduser()
@@ -79,6 +82,8 @@ class Settings:
         object.__setattr__(self, "backup_dir", backups)
         if self.scalelink_db_path:
             object.__setattr__(self, "scalelink_db_path", Path(self.scalelink_db_path).expanduser())
+        if self.read_problem_log:
+            object.__setattr__(self, "read_problem_log", Path(self.read_problem_log).expanduser())
         times = (
             self.reply_timeout_seconds,
             self.connect_timeout_seconds,
@@ -86,6 +91,7 @@ class Settings:
             self.read_pace_seconds,
             self.read_back_window_seconds,
             self.read_back_retry_seconds,
+            self.read_repeat_wait_seconds,
         )
         if not all(math.isfinite(value) for value in times):
             raise ConfigError("Timeouts and waits must be ordinary numbers.")
@@ -93,6 +99,8 @@ class Settings:
             raise ConfigError("Timeouts must be more than 0 seconds.")
         if min(times) < 0:
             raise ConfigError("Retry waits cannot be negative.")
+        if not isinstance(self.read_repeat_enabled, bool):
+            raise ConfigError("read_repeat_enabled must be true or false.")
         if self.scalelink_db_copy not in (None, SCALELINK_NOT_AVAILABLE):
             raise ConfigError(f"scalelink_db_copy can only be {SCALELINK_NOT_AVAILABLE}.")
         if not 1 <= self.connect_attempts <= 100:
@@ -137,6 +145,7 @@ _NUMBER_SETTINGS = {
     "read_pace_seconds": float,
     "read_back_window_seconds": float,
     "read_back_retry_seconds": float,
+    "read_repeat_wait_seconds": float,
 }
 _INT_SETTINGS = {
     "connect_attempts",
@@ -144,7 +153,7 @@ _INT_SETTINGS = {
     "description_max_length",
     "preview_ttl_seconds",
 }
-_PATH_SETTINGS = {"state_dir", "catalog_path", "backup_dir", "scalelink_db_path"}
+_PATH_SETTINGS = {"state_dir", "catalog_path", "backup_dir", "scalelink_db_path", "read_problem_log"}
 
 
 def _parse_settings(raw: dict[str, Any]) -> Settings:
@@ -158,6 +167,8 @@ def _parse_settings(raw: dict[str, Any]) -> Settings:
             if isinstance(value, bool) or not isinstance(value, int):
                 raise ConfigError(f"Setting {key} must be a whole number.")
             kwargs[key] = value
+        elif key == "read_repeat_enabled":
+            kwargs[key] = value  # Settings refuses anything but true or false
         elif key == "scalelink_db_copy":
             if not isinstance(value, str):
                 raise ConfigError("Setting scalelink_db_copy must be text.")

@@ -88,11 +88,22 @@ An apply can take minutes. These times were measured on November 2, 2026, throug
 
 If Claude Code gives up on a long call first, raise its `MCP_TOOL_TIMEOUT` setting (in milliseconds). A client giving up does not stop the change: it finishes and logs each scale's result, and `scale_get_change` with the preview id finds it. Claude must not apply again.
 
+### What a client cuts
+
+Claude Code cuts server instructions and a tool's description at a limit, and Claude sees only the text before the cut. The limit is 4,096 characters. Before Claude Code version 2.1.296 it was 2,048 for server instructions. A client setting can raise it, but that lives on each client, so nothing here relies on it. So:
+
+- The server instructions are under 4,000 characters. The freeze rule and the yes rule are in the first 2,000.
+- Each tool description is under 4,000 characters, with its safety words early. A test holds both to that.
+- The store's rules for Square and labels are in the result of the tool `scale_square_rules`, because a tool result is not cut. So is `next_step`, which carries the rules that matter most at that moment.
+
+Detail that left the tool descriptions is here, in "Reading a result", "Deleting an item", "Changing a PLU", "Gaps in the ids" and "Ending drift". `status_meanings` on a result says what each status it shows means.
+
 ## The tools
 
 | Tool | What it does | Contacts a scale | Marked |
 |---|---|---|---|
 | `scale_list_scales` | Names, write flags, last logged status, what the library can do, and deletes and PLU changes that have not finished | No | Read only |
+| `scale_square_rules` | The store's rules for carrying a scale change to Square and the labels | No | Read only |
 | `scale_search_items` | Finds catalog items by PLU or description | No | Read only |
 | `scale_get_item` | One catalog item, and what is recorded about it per scale | No | Read only |
 | `scale_get_change` | The logged result of a change, by change id or preview id | No | Read only |
@@ -146,6 +157,8 @@ Every result has a plain `summary` and structured data. The same data also comes
 - `still_differ` lists fields where a scale and the catalog still disagree after a change wrote past acknowledged drift. Then `success` is false and `outcome` is `partial`, even though every scale took the change, because they can sell one PLU at different prices.
 - A change with no finish shows `in_progress`. If `running` is true, something is using the scales, so check again soon. It cannot be resolved while that is so. If `running` is false, it stopped for good, and nobody knows what reached the scales.
 - `scales_may_be_frozen` names scales that gave no reply. See "A scale that may have frozen".
+- `scales_read_repeated`, and `read_repeated` on each scale, name scales whose read needed a second try. The summary says `<scale>: the read needed a second try.` Those are fixed words, with no text from the scale. A compare, a read, a preview, a settle preview and an apply all say so. One second try is no alarm, but a scale that needs one on every read should be looked at, and each second try is one more read of that scale.
+- `verified` at the top level means only that every targeted scale is verified, which a subset can reach. Go by `success`.
 - `next_step` says what to do.
 - The MCP error flag is set if a scale or record failed, may be frozen, or the call was refused. It is not set for a plain partial result, such as writes being off for a scale. So no error flag does not mean success.
 
@@ -168,9 +181,55 @@ The tools `scale_compare_scales`, `scale_read_items`, `scale_preview_changes`, `
 
 ### What has not finished
 
-`scale_list_scales` lists in `unfinished` each delete and PLU change that some scale has not confirmed, per scale. It comes from the catalog with no scale contact, so it says what may be so. The summary has a `Not finished:` line for each.
+`scale_list_scales` lists in `unfinished` each change that some scale has not confirmed, per scale. It comes from the catalog and its log, with no scale contact, so it says what may be so. The summary has a `Not finished:` line for each. More than 5 missed changes on one scale get one line for that scale, as after a failed reload, and every row stays in `unfinished`. Each row has a `kind`: `delete`, `plu_change`, `missed_change` or `list_failed`.
 
-Each row has `repeat`, the change that finishes it. A delete's `repeat` has `expected_plu`, so it cannot hit whatever holds that id by then. If that id now holds another PLU, the preview refuses with `target_changed`, nothing changes, and `next_step` says to tell the person. Only a delete takes `expected_plu`. An add or edit that gives it gets `invalid_change`. Claude shows the person. For each one they agree to, it calls `scale_preview_changes` with that `repeat` as the one change. For a delete it also sets `scales` to that scale. For a PLU change it leaves `scales` out, because a change to one scale leaves the others differing from the catalog by the timestamp. Then it shows that preview, and applies only if they agree.
+A row of kind `list_failed` means part of the catalog or its log could not be read, so the list could not be built. An empty list must never stand in for one nobody could make. The summary starts that line with `NOT KNOWN`, and `next_step` says not to read the list as all clear. What needs no log, such as an unfinished delete, is still listed beside it.
+
+`may_be_frozen` on a row means that scale gave no reply on a logged change, and that miss still stands. Every row on that scale carries it, since going back for any of them reads the same scale. It stays until a verified result ends that miss, even if a later read of the scale answers, because only a person can say the scale has been checked. The summary line says `MAY BE FROZEN`, `scales_may_be_frozen` names the scale, and `next_step` is the freeze rule, with no word of a settle. If other scales have rows too, the usual words follow for those.
+
+A `missed_change` is any other change a live item's scale may not hold, such as an add or a price edit that missed one scale:
+
+- **Listed:** a last result of `read_failed`, `unreachable`, `rejected`, `wrong_scale`, `drift_refused`, `not_sent` or `not_available`, if the catalog took the change. Nothing was sent, so the scale is behind only if the catalog moved. If every scale refused, the catalog did not move, so nothing is listed. Also listed: `unknown`, `mismatch` and `accepted_not_verified`, whether or not the catalog moved, because something went out and nobody has confirmed what the scale holds. If that change was a delete and the item is still in the catalog, the row's kind is `delete`, and its `repeat` is the delete.
+- **Also listed:** any row whose last record sent differs from the catalog in anything but the time, whatever its status, with those fields in `differs_in`. A `verified` result means the scale holds what was sent, and for an edit that is the scale's own record with only the asked for fields changed. So a later description edit can verify and leave a missed price behind. A settle that took one scale's record can leave the others behind. This needs a stored record. A row with none, or with one that cannot be read, says nothing here. A placeholder says nothing either.
+- **Not listed:** any row on a scale whose writes are off now, which is a person's choice. Once its writes are back on, a record that differs is listed, because that scale really is behind. A scale a change left out with `scales` is not listed for that alone. But if it has an earlier record that now differs from the catalog, it is listed, because that is true. Also not listed: an item already listed as a delete or a PLU change.
+- **How it ends:** that scale ends `verified` for the item with the catalog's record, by a settle or a later change. Or a read of that scale, by compare, read or a preview, made after that change, shows what the catalog lists at that id. For a row from `differs_in`, the time does not need to match. A successful reload ends it too. A later refused change does not hide an earlier miss.
+- **`catalog_took_it`:** true if the catalog holds this change. False if only an edit with lost replies went out, so the catalog did not take it. Then that scale may hold the new value, and a settle to the catalog puts the old value back. To finish the change, make a new preview of it. That row's `repeat` is empty, so the undo is not offered as the way to finish. `change_id` finds what was asked. If the person wants the old value after all, a settle still does that, and its preview shows it.
+- **Its `repeat`:** `{"tool": "scale_preview_settle_drift", "scale": ..., "take": "catalog", "plu": ...}`. Call that tool with those arguments. Do not pass it to `scale_preview_changes`. The row also has `status` and `change_id`.
+- **Many on one scale:** compare that scale once first, which clears any that match, then ask the person. Row by row costs 3 reads each: the settle preview, the read before writing and the read back. A reload at the command line is one send and one read, and only a person can run it.
+
+For a delete or PLU change, `repeat` is the change that finishes it. A delete's `repeat` has `expected_plu`, so it cannot hit whatever holds that id by then. If that id now holds another PLU, the preview refuses with `target_changed`, nothing changes, and `next_step` says to tell the person. Only a delete takes `expected_plu`. An add or edit that gives it gets `invalid_change`. Claude shows the person. For each one they agree to, it calls `scale_preview_changes` with that `repeat` as the one change. For a delete it also sets `scales` to that scale. For a PLU change it leaves `scales` out, because a change to one scale leaves the others differing from the catalog by the timestamp. Then it shows that preview, and applies only if they agree.
+
+### Scales, Square and labels
+
+A change to the scales is not finished until the Square register and the printed labels match. This server does not reach Square or print labels. Claude does both, through its own Square connector and the `anthropic-skills:cc-case-cards` skill. The tool `scale_square_rules` holds the full rule, and contacts nothing. In short:
+
+- Report scales, Square and labels separately. Say done only when all three are done, or the person has said to skip one. `success` still means only that every scale is verified.
+- Before applying, read the Square item, and show one preview of the scale change and the exact Square before and after. A yes to a preview that did not show the Square change is not a yes for Square.
+- Find the Square item by the 4 digit code that should be at the end of its name. Count a hit only if the name ends with that code and it is the same kind of product, since a wine named for its vintage year ends in a number too. Seafood and prepared foods can have no unit and take their price at the register, so there is no Square price to change.
+- Do not rely on name words alone to call it a match, but always show the person both names. A code can be on two different products, and two Square items can end in one code. Then the person decides.
+- No code match is common, and it does not mean the product is missing. Search the name's leading words too, as the skill says, before suggesting a new item.
+- Before giving a new item a code, check `scale_search_items` as well as Square.
+- Do the scales first. If the result is anything but a full success, such as partial, unknown or failed, the person decides before Square changes. This stop wins over the skill's "do not stop per group". Read Square back after writing it.
+- A scale delete does not mean delete in Square. Square's delete cascades and cannot be undone. Ask the person, and do not make a new card for a deleted item.
+- Do not carry over test items, placeholders or anything the person says is a test.
+- A settle to the catalog that holds a price, PLU or Code changes what that scale sells, or if the scale held nothing there. So check Square and the card, and tell the person. A settle to the catalog can also put back an old value, when the catalog is stale or did not take a change. A settle to the scale can change the catalog, so check Square for that item and tell the person.
+- When a settle ends a miss whose catalog had moved, `next_step` says that if Square and the labels were waiting on this scale, they are next, so ask the person.
+
+A change result has `still_to_do`:
+
+| Result | `still_to_do` |
+|---|---|
+| Full success with an add, edit or delete | `["square", "labels"]`. The headline says `SUCCESS. The scales are done.`, and `next_step` says Square and the labels are next. A delete's says never to delete in Square by default, and not to make a card. An add's or edit's has the test item rule |
+| A settle that took the scale's record | `["square"]`. It never says `Done.` |
+| A settle that took the catalog's record, with a price, PLU or Code in its fields, or onto a scale that held nothing there | `["square", "labels"]`, on any number of scales, even though other scales make the outcome partial |
+| A settle that took the catalog's record and ended a miss whose catalog had moved | `["square", "labels"]` |
+| Any other settle that took the catalog's record | `[]` |
+| Partial, unknown or anything else that is not a full success | `[]`, because the person decides first. An empty list here does not mean finished, and `next_step` says Square and the labels are not done either |
+| Failed, with nothing landed | `[]`, and `next_step` says Square and the labels wait too |
+
+`scale_get_change` gives the result as logged. If `still_to_do` is not empty, `next_step` starts `When this ran:`, the summary says what was still to do when this ran, and `still_to_do_as_of` says the same. The server cannot know what was done about Square or the labels since then, so Claude checks before doing any of it again.
+
+The staff web page does not go through Claude, so a change there reaches the scales only. On any result where the catalog moved, partial included, or a settle changed what a scale sells or finished a miss, the page says so and tells staff to tell the manager.
 
 ### Deleting an item
 
@@ -278,13 +337,13 @@ The preview id and the drift token are in `preview_id` and `drift_tokens_to_ackn
 **5. Read the result.** With writes on for every scale and all well:
 
 ```
-SUCCESS. Done. Every scale confirmed it by reading it back.
+SUCCESS. The scales are done. Every scale confirmed it by reading it back. Square and the labels are still to do.
 SCALE1: verified. Confirmed. The scale said Ok, and reading it back matched every field.
 SCALE2: verified. Confirmed. The scale said Ok, and reading it back matched every field.
 Found before writing on SCALE2 at id 7: differs in price 12.00 on the scale and 12.50 expected.
 SCALE3: verified. Confirmed. The scale said Ok, and reading it back matched every field.
 Batch of 3 records: 3 verified on every configured scale, 0 not.
-Next: Nothing more. Every configured scale confirmed this by reading it back.
+Next: Every configured scale confirmed this by reading it back. The scales are done, and Square and the labels are next. Call scale_square_rules first. If the person has said yes to the exact Square change, make it and read it back. If not, show it to them and ask. Then make the case card. Do not say done until all three are done, or the person says to skip one. Do not carry over test items, placeholders or anything the person says is a test.
 ```
 
 If SCALE3 has writes off and SCALE2 said Error, it reads like this instead, and Claude says so plainly:

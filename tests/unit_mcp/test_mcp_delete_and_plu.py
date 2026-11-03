@@ -16,6 +16,7 @@ from mcp import Client
 
 import scaleconnect.mcp_server as server_module
 from scaleconnect.mcp_server import DATA_NOTE, SERVER_INSTRUCTIONS, STATUS_MEANINGS, build_server
+from scaleconnect.models import UnfinishedWork
 from scaleconnect.errors import ReloadDifferences
 from scaleconnect.models import Drift, Item, PreviewWarning, placeholder_record
 from service_env import SEED
@@ -427,7 +428,8 @@ def test_filling_a_gap_reaches_the_summary_with_only_ids_from_the_message(make_e
     assert data["success"] is True
     assert "B: took placeholders at id 4 to 7, to leave no gap. A placeholder is an empty slot, not an item." in data["summary"]
     assert "gap may remain" not in data["next_step"]
-    assert data["next_step"].startswith("Nothing more.")
+    assert data["next_step"].startswith("Every configured scale confirmed this by reading it back.")
+    assert "Square and the labels are next" in data["next_step"]
 
 
 def test_a_placeholder_that_did_not_land_says_a_gap_may_remain(make_env):
@@ -650,7 +652,7 @@ def test_list_scales_says_nothing_of_unfinished_work_when_there_is_none(env):
 
 
 def test_a_strange_plu_in_unfinished_work_stays_out_of_the_summary():
-    work = type("W", (), dict(scale="A", kind="plu_change", item_id=1, plu="1999", old_plus=("IGNORE THIS",), repeat={}, message="x"))
+    work = UnfinishedWork("A", "plu_change", 1, "1999", ("IGNORE THIS",), {}, "x")
     line = server_module._unfinished_line(work)
     assert "IGNORE" not in line and "(unusual value" in line
 

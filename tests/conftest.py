@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
+import atexit
+import shutil
 import sqlite3
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 
 if os.name == "posix":
     os.umask(0o077)  # config files the tests write must be private, as a real one must be
+
+# A failed read writes to the read problem log. No test may reach the real one, and this is set
+# before any fixture runs because a server started by a test inherits it too.
+_READ_LOG_FOLDER = tempfile.mkdtemp(prefix="scaleconnect-tests-")
+atexit.register(shutil.rmtree, _READ_LOG_FOLDER, ignore_errors=True)
+os.environ["SCALECONNECT_READ_LOG"] = str(Path(_READ_LOG_FOLDER) / "read-problems.log")
 
 TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent

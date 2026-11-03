@@ -150,17 +150,55 @@ A real fill gives the warning `gap_filled`, which needs acknowledging. So does a
 
 ### A scale that may be frozen
 
-`may_be_frozen` is true on a result where a scale gave no reply. It is on `ScaleResult`, `ScaleRead`, `ScaleComparison`, `OrphanMarks`, `ReloadResult`, `PreviewWarning` (`scale_read_failed`) and `PreviewError` (`settle_read_failed`). Do not read that scale again until a person has checked it and rebooted it if needed, because a table that froze it can freeze it again. Use the field, and do not match the words.
+`may_be_frozen` is true on a result where a scale gave no reply, or sent blocks out of order and then did not close when we hung up. It is on `ScaleResult`, `ScaleRead`, `ScaleComparison`, `OrphanMarks`, `ReloadResult`, `PreviewWarning` (`scale_read_failed`) and `PreviewError` (`settle_read_failed`). Do not read that scale again until a person has checked it and rebooted it if needed, because a table that froze it can freeze it again. Use the field, and do not match the words.
+
+### When a read goes wrong
+
+**The one repeat.** It is off by default. The `read_repeat_enabled` setting turns it on. Leave it off until a repeat at `read_repeat_wait_seconds` has been tested on the real test scale, because none has ever run on a real scale. With it off, nothing is read twice. The message still gives the ids, and the problem is still logged.
+
+With it on, a read starts once more from id 1, after `read_repeat_wait_seconds`, 5 by default, only if all of these hold:
+
+- A block failed the order check, with at least one good block before it.
+- The ids in that block are from 1 to 500.
+- It came on the first `LP` of this read call. An `LP` that was dropped and tried again rules out a repeat.
+- The scale closed its side when we hung up. It may send more bytes first, and those are thrown away. It has about 2 seconds, or the reply wait if that is shorter.
+
+At most one repeat per read call. It never skips or accepts a bad block.
+
+- **No repeat, a plain failure.** A record not in the expected form, a reply that is no read block, a bad check character, a block too long, an id above 500, or a first block out of order. Blank records came right before a real freeze, so these never send a second `LP`. See `docs/PROTOCOL.md` section 3.
+- **No repeat, and it may be frozen.** Silence, a dropped connection, a failed connect, or blocks out of order on a scale that did not close when we hung up. In that last case `may_be_frozen` is true with the setting on or off, and the message adds `The scale did not close the connection after we hung up.` and the frozen note.
+- **In the repeat, one try at `LP`.** If it is dropped or gets no reply, the read stops with `may_be_frozen`. Only a refused connect is tried again, because no message went out and the scale answered. A connect that gets no answer stops it too.
+- If the repeat works, the read succeeds. `ReadResult.repeated` is true and `first_problem` says why. Both stay unset if no repeat was tried.
+- If it fails too, the message names both reasons, and `may_be_frozen` comes from the second read. `repeated` is true here even if every connect was refused and no second `LP` went out.
+- A read back keeps to its window. The repeat starts only if its wait ends inside `read_back_window_seconds`. If not, the first problem stands. While it runs, a refused connect is tried until the window ends, and silence on the read stops at once.
+- A failed read can take about twice as long, plus the wait.
+- A write is never repeated. `CX` is not repeated either.
+
+**The words.** The message gives parsed ids and never a word from a record:
+
+`FRONT: the read failed (the scale sent blocks out of order: last id seen 170, then a block from id 166 to id 170, exactly the same as the block before).`
+
+The ending can also be `different from the block before` or `with no block before it`, and can add `, with ids inside it out of order or repeated`. An id above 99999 shows as `over 99999`. If both reads fail, the message is `<name>: the read failed (<first reason>). It was read once more, and that failed too. <second message>`.
+
+**The log.** Every read problem adds one line to `~/.local/state/scaleconnect/read-problems.log`, or the folder `XDG_STATE_HOME` names, the same state folder `deploy/*.sh` uses. The `read_problem_log` setting or the `SCALECONNECT_READ_LOG` variable moves it. The web page, MCP server and command line share the file. It is private to the user. Past about 1 MB it drops the older half. A failure to write it never touches the read.
+
+```
+2026-11-02T16:55:12-06:00 scale=FRONT read=plain last_id=170 blocks=35 seconds=20.4 silent=no repeat=will_try what=the read failed (...).
+```
+
+`read` is `plain`, `patient`, which means a read back, or `identity`, which means a `CX` that failed. `last_id` is the last id that was in order, and it never shows above 99999. `blocks` counts blocks received, including the bad one. `seconds` runs from the start of the read call. `silent` is yes if the result was `may_be_frozen`. `repeat` is `no`, `no_time` (a read back had no window left), `will_try`, then one more line with `worked` or `failed`. It holds no product text. A read back logs when it ends, not at each refused try during the busy gap.
+
+A `CX` that fails adds one `read=identity` line, whether the service sent it on its own or `read_items` did. When `read_items` stops there, that is the only line for that call. A `CX` that works adds no line. Neither does a failed `CX` inside a read back, which logs at its end.
 
 ### What is unfinished
 
-`list_unfinished()` gives one `UnfinishedWork` for each scale that has not confirmed a delete or a PLU change. It contacts no scale, so it says what may be so.
+`list_unfinished()` gives one `UnfinishedWork` for each scale that has not confirmed a delete, a PLU change, or an add or edit it missed. It contacts no scale, so it says what may be so.
 
 ```python
-UnfinishedWork(scale: str, kind: str, item_id: int, plu: str, old_plus: tuple[str, ...], repeat: dict, message: str)
+UnfinishedWork(scale: str, kind: str, item_id: int, plu: str, old_plus: tuple[str, ...], repeat: dict, message: str, status: str = "", change_id: str = "", catalog_took_it: bool = True, may_be_frozen: bool = False, differs_in: tuple[str, ...] = (), at: str = "")
 ```
 
-`kind` is `delete` or `plu_change`. `plu` is the PLU the catalog has, or for a delete the one it had. `old_plus` is what that scale may still sell. `repeat` is the change to pass to `preview_changes` to finish it. Show `message`, then offer that.
+`kind` is `delete`, `plu_change` or `missed_change`. `plu` is the PLU the catalog has, or for a delete the one it had. `old_plus` is what that scale may still sell. For a delete or a PLU change, `repeat` is the change to pass to `preview_changes` to finish it. For a missed change, `repeat` names the settle to preview, with `tool`, `scale`, `take` and `plu`, and `status` and `change_id` say what happened on that scale. Show `message`, then offer that.
 
 ### Reloading one scale
 
@@ -541,7 +579,7 @@ The preview is used up and the start logged in one transaction. So `get_change_f
 3. Marks the preview used, and logs that the change started.
 4. For each targeted scale, one at a time, in config order. It logs each result as it comes, and a failure moves on to the next scale:
    1. **Identity.** Sends `CX`. A wrong serial sends nothing else.
-   2. **Read.** Sends `LP` and reads the whole table, once. Any write must find its PLU under any other id, and know where the table ends.
+   2. **Read.** Sends `LP` and reads the whole table, once, or twice if the scale answered badly. See "When a read goes wrong". Any write must find its PLU under any other id, and know where the table ends.
    3. **Compare.** A different product, a duplicate PLU, an occupied id, a read that ended early, a fill nobody saw, or field drift nobody acknowledged refuses this whole scale.
    4. **Build.** The scale's own record with only the requested fields, plus one new timestamp. A record that fails validation is refused here.
    5. **Write.** `RI`, `bX01XX`, `GP` batches, `GPF0`. Each waits for the last reply, and each batch's reply is checked.
@@ -549,9 +587,9 @@ The preview is used up and the start logged in one transaction. So `get_change_f
    7. **No resend.** Nothing goes out twice on its own.
 5. Updates the catalog, and logs the finish.
 
-A read or `CX` that gets no reply says the scale may have frozen and may need a reboot. A read has frozen real scales. See `docs/PROTOCOL.md` section 3. Nothing keeps sending to a scale that stopped replying: a stall on an ordinary read ends it at once, and the read back stops at its window, or at once if blocks had started to come.
+A read or `CX` that gets no reply says the scale may have frozen and may need a reboot. A read has frozen real scales. See `docs/PROTOCOL.md` section 3. Nothing keeps sending to a scale that stopped replying: a stall on an ordinary read ends it at once, and the read back stops at its window, or at once if blocks had started to come or it was the repeat. Blocks out of order on a scale that then does not close say the same.
 
-How retries work: a connect that fails, at once or by timing out, is tried again up to `connect_attempts` times, and the wait doubles from `connect_retry_wait_seconds` up to 30 seconds. So is `CX` or the start of a read that gets dropped with no reply, which is another way a busy scale says no. With the defaults that is at least 65 seconds of real time, even if each refusal comes back at once. The read back keeps trying for `read_back_window_seconds`, 45 by default, also in real time. `load_config` warns if either covers under 15 seconds. Nothing is retried once a scale has stalled on an opening message or has answered.
+How retries work: a connect that fails, at once or by timing out, is tried again up to `connect_attempts` times, and the wait doubles from `connect_retry_wait_seconds` up to 30 seconds. So is `CX` or the start of a read that gets dropped with no reply, which is another way a busy scale says no. With the defaults that is at least 65 seconds of real time, even if each refusal comes back at once. The read back keeps trying for `read_back_window_seconds`, 45 by default, also in real time. `load_config` warns if either covers under 15 seconds. Nothing is retried once a scale has stalled on an opening message or has answered, apart from the one repeat of a read in "When a read goes wrong", which is off by default.
 
 Turning a flag off in the config file takes effect at once, even in a running server. It is checked at each scale, and again right before writing. So does taking a scale out or moving its address, which counts as off. Any other change needs a restart: a scale added, a flag turned on, a serial, a setting, the PIN or token. Until then `config_changed()` gives plain words, `apply_change` and `reload_scale` raise `ConfigChanged`, and a preview or settle gives the error `config_changed`, all with nothing sent. Otherwise a price edit would report success for the old scales while the new one got nothing.
 

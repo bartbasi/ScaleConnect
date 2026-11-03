@@ -129,6 +129,14 @@ Other behavior:
 - If the PC closes during a read, the scale sends the block again, then `LP00End`, then closes. A new `LP` starts at id 1. (Reply. p1 capture stream 47)
 - Not seen yet: a block with fewer than 5 records, or a gap in the ids. The table was full. Trust the count in the block, not the number 5. (Unknown)
 
+**A read that stopped on bad order, November 2, 16:55.**
+
+Seen, on FRONT over WiFi, with nobody touching it. A read stopped about 20 s into a 30 s read, judging by timing, because a block failed our order check. FRONT answered ping at once and read clean about 3 minutes later. KITCHEN and COUNTER took the change, so FRONT was left one change behind. We kept no ids, so we can't say what FRONT sent. (Reply)
+
+Not proven: the scale resent a block because an `Ok` was late on WiFi. It fits the resend above, but nobody has seen a late `Ok` cause one. (Inferred, weakly)
+
+Also that day: KITCHEN failed a read at 14:23 with no freeze, and the reason was lost. KITCHEN timed out at 15:03 with a possible freeze, and we don't know how far it got. So a read now names the ids in this failure and logs every problem. It can also read once more, only after this one kind of failure, and only with a setting that is off by default. Nobody has run a read 5 seconds after a stopped read on a real scale, so that needs a test on the test scale first. Other odd answers do not count: the blank records in the table above came right before a freeze. See `docs/LIBRARY.md`, "When a read goes wrong". The next time this happens, that log says whether the block was an exact repeat.
+
 Bart reports ScaleLink's own read hangs. We have no capture of it. Our read did not hang in two full reads and a dozen partial ones.
 
 Caution: the test scale left the network 9 s after the delete probes, on the next `LP`. It had just done two full reads with no trouble, so the delete probes are the likely cause, not the read. That is not proven. See section 7.
@@ -353,6 +361,7 @@ Reply waits on full sends in test9 and test10. (Reply. `research/lab/cap_timing.
 - Delete by overwriting the id with a placeholder. See section 7. Never send an `E` message.
 - Change a PLU by writing the same id with a new Code and PLU. Code always follows the PLU.
 - Say the scale may have frozen when a read gets no reply. See section 3.
+- Read once more, once, only when the scale kept answering and the answer made no sense. Never after silence, and never on a write.
 - Reads of production scales need Bart's go ahead at the final gate.
 
 ## 12. Still unknown
@@ -368,6 +377,7 @@ Reply waits on full sends in test9 and test10. (Reply. `research/lab/cap_timing.
 9. Batches above 5 with a read back.
 10. Whether a read is safe at reply speed. The lab never went above one send a second.
 11. Whether the three scales run the same firmware. So far only one scale has been read.
+12. What FRONT sent in the read that stopped on November 2, and why. See section 3.
 
 ## 13. What the read changed
 

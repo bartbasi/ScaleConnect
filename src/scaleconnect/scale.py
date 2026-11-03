@@ -12,7 +12,12 @@ send arbitrary text. Two paths reach the socket, each with its own guard:
 contacted. A write needs the serial to match first, and send_items checks that itself,
 so no caller can skip it. Nothing here resends a record after sending has begun.
 
-Read blocks never go in the reply list that reaches the change log.
+A read whose blocks came out of order can be read once more, if read_repeat_enabled is on.
+See read_items. Any other bad answer never is, and a read the scale went silent on never
+is. Writes never are.
+
+Read blocks never go in the reply list that reaches the change log. Read problems go in
+read_log, as ids and counts only.
 
 A delete has no message of its own. It is a send_items call with a placeholder record,
 because overwriting an id removes the old PLU. No E message exists here, and none can be
@@ -21,12 +26,13 @@ framed.
 
 from __future__ import annotations
 
+import errno
 import socket
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Sequence
 
-from . import protocol
+from . import protocol, read_log
 from .config import MAX_CONNECT_WAIT_SECONDS, ScaleConfig, Settings
 from .errors import NotReadEnabled, NotWriteEnabled
 from .models import ITEM_NOT_SENT, MAX_ITEM_ID, STATUS_SEVERITY, Item, ScaleStatus
@@ -37,9 +43,11 @@ DELETE_AVAILABLE = True
 # A read has frozen real scales: no reply, then gone from the network until rebooted. See
 # docs/PROTOCOL.md section 3. Any read or identity that gets no reply says so.
 FROZEN_NOTE = "The scale may have frozen, and may need a reboot."
+_NOT_CLOSED = "The scale did not close the connection after we hung up."
 
 _READ_SIZE = 4096
 _CLOSE_WAIT = 2.0
+_LARGEST_ID_SHOWN = 99999  # a broken block can hold an id of any length
 _READ_MESSAGES = {
     "CX": protocol.build_identity,
     "LP": protocol.build_read_start,
@@ -81,7 +89,9 @@ class ReadResult:
     message: str
     items: dict[int, Item]
     complete: bool = False  # reached the end of the table, not an early stop
-    may_be_frozen: bool = False  # it gave no reply. Do not read it again until a person has checked it
+    may_be_frozen: bool = False  # no reply, or it would not close after bad blocks. Do not read it again until a person has checked it
+    repeated: bool = False  # the first read's blocks came out of order, so a second read was tried. A refused connect can mean no second LP went out
+    first_problem: str | None = None  # the order problem that caused that, in library words and ids. None if no second read was tried
 
 
 class _NoSession(Exception):
@@ -112,11 +122,29 @@ class _CouldNotConnect(Exception):
 
 
 class _ReadStopped(Exception):
-    def __init__(self, message: str, *, before_first_block: bool = False, no_reply: bool = False, silent: bool = False) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        before_first_block: bool = False,
+        no_reply: bool = False,
+        silent: bool = False,
+        order_problem: bool = False,
+    ) -> None:
         super().__init__(message)
         self.before_first_block = before_first_block
         self.no_reply = no_reply
         self.silent = silent  # the scale stopped answering, as opposed to answering badly
+        self.order_problem = order_problem  # blocks out of order after a good block, the one case a repeat can follow
+
+
+@dataclass
+class _ReadProgress:
+    """How far one read got, for the read problem log."""
+
+    last_id: int = 0
+    blocks: int = 0
+    lp_sent: int = 0  # counts a dropped LP that was tried again, so a repeat cannot come on top of those
 
 
 @dataclass
@@ -181,28 +209,39 @@ class ScaleClient:
         sock.settimeout(self._settings.reply_timeout_seconds)
         sock.sendall(_READ_MESSAGES[name]())
 
-    def _end_session(self, sock: socket.socket) -> None:
+    def _end_session(self, sock: socket.socket) -> bool:
         """Hang up, and give the scale a moment to finish before any next session.
 
         After an early stop the scale sends the block again and LP00End, then closes. A new
         session that starts before then seems to queue behind the old one. What it sends
         here is thrown away unread, and never kept.
+
+        Returns whether the scale closed its side inside the wait. Bytes alone do not count,
+        only the close or a reset that ends them. In a real freeze our hang up was never
+        answered. Only the order problem path in the read uses the answer.
         """
         try:
             sock.shutdown(socket.SHUT_WR)
             deadline = time.monotonic() + min(_CLOSE_WAIT, self._settings.reply_timeout_seconds)
             while self._read_chunk(sock, deadline):
                 pass
-        except OSError:
-            pass
+            return True
+        except ConnectionResetError:
+            return True
+        except OSError as exc:
+            return exc.errno == errno.ENOTCONN  # on Linux, a reset that came before we hung up
         finally:
             sock.close()
 
-    def _connect_with_retry(self, attempt: Callable[[], Any]) -> Any:
+    def _connect_with_retry(self, attempt: Callable[[], Any], *, refused_only: bool = False) -> Any:
         """Tries up to connect_attempts times, and the wait grows each time.
 
         It retries a connect that fails, at once or by timing out, and a read message dropped
-        with no reply. It never retries once a scale has said anything, or has stalled.
+        with no reply. It never retries once a scale has said anything, or has stalled. The
+        one repeat of a read is decided in read_items, not here.
+
+        With refused_only, for that repeat, only a refused connect is tried again, since no
+        message went out and the scale answered. So the repeat's LP goes out once.
         The waits are real time: see config.connect_retry_span_seconds.
         """
         attempts = self._settings.connect_attempts
@@ -215,9 +254,13 @@ class ScaleClient:
             except OSError as exc:
                 last = _describe(exc)
                 connected = False
+                if refused_only and not isinstance(exc, ConnectionRefusedError):
+                    break
             except _NoReplyYet as exc:
                 last = str(exc)
                 connected = True
+                if refused_only:
+                    break
             if tried < attempts:
                 self._sleep(wait)
                 wait = min(wait * 2, MAX_CONNECT_WAIT_SECONDS)
@@ -289,6 +332,24 @@ class ScaleClient:
             self._end_session(sock)
 
     def _identify_once(self, *, retry: bool) -> IdentityCheck:
+        started = time.monotonic()
+        check = self._check_identity(retry=retry)
+        # A read back tries this many times while the scale settles, which is normal, and logs its own end.
+        if retry and not check.ok:
+            read_log.record(
+                self._settings.read_problem_log,
+                scale=self._scale.name,
+                read="identity",
+                what=check.message.removeprefix(f"{self._scale.name}: ").replace(FROZEN_NOTE, "").strip(),
+                last_id=0,
+                blocks=0,
+                seconds=time.monotonic() - started,
+                silent=check.may_be_frozen,
+                repeat="no",
+            )
+        return check
+
+    def _check_identity(self, *, retry: bool) -> IdentityCheck:
         expected = self._scale.serial
         name = self._scale.name
         if not expected:
@@ -329,55 +390,117 @@ class ScaleClient:
         There is no way to seek, so a read always starts at id 1. patient is for the read
         back: the scale ignores connections for about 10 to 11 seconds after a write, so
         keep trying through a window of read_back_window_seconds.
+
+        With read_repeat_enabled on, one case is read once more from the top, after
+        read_repeat_wait_seconds. All of these must hold: the block failed the order check, a
+        good block came before it, its ids are ones a scale can hold, it came on this call's
+        first LP, and the scale closed its side when we hung up. At most once per call, and
+        that second LP goes out once. Every other bad answer is a plain failure, because some
+        came right before a real freeze. See PROTOCOL.md section 3.
+
+        If blocks came out of order and the scale did not close, it may be frozen, so the
+        result says so, with the setting on or off. A scale that went silent is never read
+        again here.
         """
         self._require_read_allowed()
         if patient:
             return self._read_patiently(up_to_id)
+        started = time.monotonic()
         if not self._identity_confirmed:
-            identity = self.identify()
+            identity = self.identify()  # a failure here has gone in the log already
             if not identity.ok:
                 return ReadResult(False, identity.status, identity.message, {}, may_be_frozen=identity.may_be_frozen)
+        first, progress, problem = self._read_once(up_to_id)
+        if first.ok:
+            return first
+        if problem is None:
+            self._log_read(first, progress, started, "no")
+            return first
+        self._log_read(first, progress, started, "will_try")
+        self._sleep(self._settings.read_repeat_wait_seconds)
+        second, progress, _ = self._read_once(up_to_id, repeat=True)
+        self._log_read(second, progress, started, "worked" if second.ok else "failed")
+        if second.ok:
+            return replace(second, repeated=True, first_problem=problem)
+        return replace(second, message=_both_failed(self._scale.name, problem, second.message), repeated=True, first_problem=problem)
+
+    def _read_once(self, up_to_id: int | None, *, repeat: bool = False) -> tuple[ReadResult, _ReadProgress, str | None]:
+        """One read from the top. The last value is what went wrong, if a repeat is allowed."""
+        progress = _ReadProgress()
+        closed = False
 
         def attempt() -> tuple[dict[int, Item], bool]:
+            nonlocal closed
             sock = self._connect_read()
             try:
-                return self._read_table(sock, up_to_id)
+                return self._read_table(sock, up_to_id, progress)
             except _ReadStopped as exc:
                 if exc.no_reply:
                     raise _NoReplyYet(str(exc)) from exc
                 raise
             finally:
-                self._end_session(sock)
+                closed = self._end_session(sock)
 
         name = self._scale.name
         try:
-            items, complete = self._connect_with_retry(attempt)
+            items, complete = self._connect_with_retry(attempt, refused_only=repeat)
         except _CouldNotConnect as exc:
             if exc.connected:
-                return ReadResult(False, ScaleStatus.READ_FAILED, f"{name}: the read failed ({exc}). {FROZEN_NOTE}", {}, may_be_frozen=True)
-            return ReadResult(False, ScaleStatus.UNREACHABLE, f"{name}: could not connect to read ({exc}). {FROZEN_NOTE}", {}, may_be_frozen=True)
+                return ReadResult(False, ScaleStatus.READ_FAILED, f"{name}: the read failed ({exc}). {FROZEN_NOTE}", {}, may_be_frozen=True), progress, None
+            return ReadResult(False, ScaleStatus.UNREACHABLE, f"{name}: could not connect to read ({exc}). {FROZEN_NOTE}", {}, may_be_frozen=True), progress, None
         except _ReadStopped as exc:
-            return ReadResult(False, ScaleStatus.READ_FAILED, _stopped_message(name, exc), {}, may_be_frozen=exc.silent)
-        return ReadResult(True, None, f"{name}: read {len(items)} records.", items, complete)
+            result, problem = self._stopped_result(exc, closed, progress)
+            return result, progress, problem
+        return ReadResult(True, None, f"{name}: read {len(items)} records.", items, complete), progress, None
+
+    def _stopped_result(self, exc: _ReadStopped, closed: bool, progress: _ReadProgress) -> tuple[ReadResult, str | None]:
+        """The result of a read that stopped, and the reason to give if a repeat may follow."""
+        name = self._scale.name
+        if exc.order_problem and not closed:
+            message = f"{name}: the read failed ({exc}). {_NOT_CLOSED} {FROZEN_NOTE}"
+            return ReadResult(False, ScaleStatus.READ_FAILED, message, {}, may_be_frozen=True), None
+        result = ReadResult(False, ScaleStatus.READ_FAILED, _stopped_message(name, exc), {}, may_be_frozen=exc.silent)
+        may_repeat = exc.order_problem and progress.lp_sent == 1 and self._settings.read_repeat_enabled is True
+        return result, str(exc) if may_repeat else None
 
     def _read_patiently(self, up_to_id: int | None) -> ReadResult:
+        """The read back. The same one repeat as read_items, inside the same window.
+
+        The window is there to wait out the busy gap and to limit how long a caller waits, so
+        the repeat gets no time of its own. It starts only if its wait ends inside the window.
+        Otherwise the first problem stands. As with any read, one under way is not cut off.
+        While the repeat runs, a refused connect is still tried until the window ends, because
+        a connect sends the table nothing and the scale answered it. A connect that gets no
+        answer, and any silence on the read itself, stop at once.
+        """
         name = self._scale.name
-        deadline = time.monotonic() + self._settings.read_back_window_seconds
+        started = time.monotonic()
+        deadline = started + self._settings.read_back_window_seconds
+        repeat_wait = self._settings.read_repeat_wait_seconds
         last = "no attempt was made"
         silent = True
+        progress = _ReadProgress()
+        first_problem: str | None = None
+
+        def stop(result: ReadResult) -> ReadResult:
+            if first_problem is None:
+                self._log_read(result, progress, started, "no", patient=True)
+                return result
+            self._log_read(result, progress, started, "failed", patient=True)
+            return replace(result, message=_both_failed(name, first_problem, result.message), repeated=True, first_problem=first_problem)
 
         def out_of_time() -> ReadResult:
             text = f"{name}: could not read back in time ({last})."
             if silent and FROZEN_NOTE not in text:
                 text = f"{text} {FROZEN_NOTE}"
-            return ReadResult(False, ScaleStatus.READ_FAILED, text, {}, may_be_frozen=silent)
+            return stop(ReadResult(False, ScaleStatus.READ_FAILED, text, {}, may_be_frozen=silent))
 
         # The window is real time, whichever way the scale says no: at once, or not at all.
         while True:
             if not self._identity_confirmed:
                 identity = self._identify_once(retry=False)
                 if identity.status is ScaleStatus.WRONG_SCALE:
-                    return ReadResult(False, identity.status, identity.message, {})
+                    return stop(ReadResult(False, identity.status, identity.message, {}))
                 if not identity.ok:
                     last = identity.message
                     silent = identity.may_be_frozen
@@ -385,35 +508,79 @@ class ScaleClient:
                         return out_of_time()
                     self._sleep(self._settings.read_back_retry_seconds)
                     continue
+            progress = _ReadProgress(lp_sent=progress.lp_sent)
+            answered_badly: _ReadStopped | None = None
+            closed = False
             try:
                 sock = self._connect_read()
             except OSError as exc:
                 last = _describe(exc)
                 silent = True
+                if first_problem is not None and not isinstance(exc, ConnectionRefusedError):
+                    return stop(ReadResult(False, ScaleStatus.READ_FAILED, f"{name}: could not connect to read back ({last}). {FROZEN_NOTE}", {}, may_be_frozen=True))
             else:
                 try:
-                    items, complete = self._read_table(sock, up_to_id)
-                    return ReadResult(True, None, f"{name}: read {len(items)} records.", items, complete)
+                    items, complete = self._read_table(sock, up_to_id, progress)
+                    result = ReadResult(True, None, f"{name}: read {len(items)} records.", items, complete)
+                    if first_problem is None:
+                        return result
+                    self._log_read(result, progress, started, "worked", patient=True)
+                    return replace(result, repeated=True, first_problem=first_problem)
                 except _ReadStopped as exc:
                     last = str(exc)
                     silent = exc.silent
-                    # Once blocks have come, a problem is a real stall. Stop.
-                    if not exc.before_first_block:
-                        return ReadResult(False, ScaleStatus.READ_FAILED, _stopped_message(name, exc), {}, may_be_frozen=exc.silent)
+                    if not exc.silent:
+                        answered_badly = exc
+                    # Once blocks have come, silence is a real stall. Stop. The same goes for a
+                    # repeat: the scale was past its busy gap, so this is no busy gap either.
+                    elif not exc.before_first_block or first_problem is not None:
+                        return stop(ReadResult(False, ScaleStatus.READ_FAILED, _stopped_message(name, exc), {}, may_be_frozen=True))
                 finally:
-                    self._end_session(sock)
+                    closed = self._end_session(sock)
+            if answered_badly is not None:
+                failed, problem = self._stopped_result(answered_badly, closed, progress)
+                if first_problem is not None:
+                    return stop(failed)
+                if problem is None:
+                    self._log_read(failed, progress, started, "no", patient=True)
+                    return failed
+                if time.monotonic() + repeat_wait >= deadline:
+                    self._log_read(failed, progress, started, "no_time", patient=True)
+                    return failed
+                first_problem = problem
+                self._log_read(failed, progress, started, "will_try", patient=True)
+                self._sleep(repeat_wait)
+                continue
             if time.monotonic() >= deadline:
                 return out_of_time()
             self._sleep(self._settings.read_back_retry_seconds)
 
-    def _read_table(self, sock: socket.socket, up_to_id: int | None) -> tuple[dict[int, Item], bool]:
+    def _log_read(self, result: ReadResult, progress: _ReadProgress, started: float, repeat: str, *, patient: bool = False) -> None:
+        """One line in the read problem log. It never raises. Only the library's words go in."""
+        name = self._scale.name
+        what = "the repeat read worked" if result.ok else result.message.removeprefix(f"{name}: ").replace(FROZEN_NOTE, "").strip()
+        read_log.record(
+            self._settings.read_problem_log,
+            scale=name,
+            read="patient" if patient else "plain",
+            what=what,
+            last_id=progress.last_id,
+            blocks=progress.blocks,
+            seconds=time.monotonic() - started,
+            silent=result.may_be_frozen,
+            repeat=repeat,
+        )
+
+    def _read_table(self, sock: socket.socket, up_to_id: int | None, progress: _ReadProgress) -> tuple[dict[int, Item], bool]:
         items: dict[int, Item] = {}
         buffer = b""
         last_id = 0
+        previous: tuple[Item, ...] | None = None
         first = True
         while True:
             try:
                 if first:
+                    progress.lp_sent += 1
                     self._send_read_message(sock, "LP")
                 else:
                     self._sleep(self._settings.read_pace_seconds)
@@ -427,13 +594,17 @@ class ScaleClient:
             first = False
             if block.end:
                 return items, True
+            progress.blocks += 1
             ids = [record.id for record in block.records]
             if ids[0] <= last_id or ids != sorted(set(ids)):
                 # We sent only Ok, so this is not a step forward. Do not loop on it.
-                raise _ReadStopped("the scale sent blocks out of order")
+                order_problem = previous is not None and min(ids) >= 1 and max(ids) <= MAX_ITEM_ID
+                raise _ReadStopped(_out_of_order(last_id, ids, previous, block.records), order_problem=order_problem)
             for record in block.records:
                 items[record.id] = record
+            previous = block.records
             last_id = ids[-1]
+            progress.last_id = last_id
             if last_id > MAX_ITEM_ID:
                 raise _ReadStopped("the scale listed an id above the limit")
             if up_to_id is not None and last_id >= up_to_id:
@@ -446,6 +617,8 @@ class ScaleClient:
                 taken = protocol.take_read_block(buffer)
             except protocol.ReadReplyError as exc:
                 raise _ReadStopped(str(exc)) from exc
+            except ValueError as exc:  # an id too long to be a number. Its text is not repeated
+                raise _ReadStopped("A record in the read block is not in the expected form.") from exc
             if taken is not None:
                 return taken
             chunk = self._read_chunk(sock, deadline)
@@ -615,6 +788,29 @@ class ScaleClient:
 def _stopped_message(name: str, exc: _ReadStopped) -> str:
     text = f"{name}: the read failed ({exc})."
     return f"{text} {FROZEN_NOTE}" if exc.silent else text
+
+
+def _both_failed(name: str, first_problem: str, second_message: str) -> str:
+    return f"{name}: the read failed ({first_problem}). It was read once more, and that failed too. {second_message}"
+
+
+def _id_word(value: int) -> str:
+    return str(value) if value <= _LARGEST_ID_SHOWN else f"over {_LARGEST_ID_SHOWN}"
+
+
+def _out_of_order(last_id: int, ids: Sequence[int], previous: tuple[Item, ...] | None, block: tuple[Item, ...]) -> str:
+    """Parsed ids only, and never a word of what the records say."""
+    if previous is None:
+        compared = "with no block before it"
+    elif block == previous:
+        compared = "exactly the same as the block before"
+    else:
+        compared = "different from the block before"
+    inside = "" if list(ids) == sorted(set(ids)) else ", with ids inside it out of order or repeated"
+    return (
+        f"the scale sent blocks out of order: last id seen {_id_word(last_id)}, "
+        f"then a block from id {_id_word(ids[0])} to id {_id_word(ids[-1])}, {compared}{inside}"
+    )
 
 
 def _describe(exc: OSError) -> str:

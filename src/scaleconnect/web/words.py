@@ -42,6 +42,50 @@ OUTCOME_WORDS: dict[str, tuple[str, str]] = {
 }
 
 
+# A change on this page reaches the scales only. Only a change Claude makes also reaches Square and the labels.
+AFTER_SUCCESS_NOTE = "The scales are done. This page does not change Square or the shelf labels. Tell the manager so they can be updated."
+AFTER_PARTIAL_NOTE = "Not every scale has this change yet. This page does not change Square or the shelf labels. Tell the manager this item changed."
+AFTER_SETTLE_SALE_NOTE = "This changed what that scale sells. This page does not change Square or the shelf labels. Tell the manager so they can check them."
+AFTER_SETTLE_MISS_NOTE = "This page does not change Square or the shelf labels. If they were waiting on this scale, tell the manager so they can be updated."
+AFTER_TAKE_SCALE_NOTE = "Our list changed to match this scale. This page does not change Square or the shelf labels. Tell the manager so they can check them."
+_SALE_ACTIONS = frozenset({"add", "edit", "delete"})
+_LANDED = frozenset({"verified", "accepted_not_verified"})
+_UNSETTLED = frozenset({"unknown", "mismatch"})
+_SELLING_FIELDS = frozenset({"price", "plu", "code"})
+
+
+def after_success_note(actions: list[str], success: bool) -> str | None:
+    """The line under a change every scale confirmed, if it changed what is sold. A settle does not."""
+    return AFTER_SUCCESS_NOTE if success and _SALE_ACTIONS.intersection(actions) else None
+
+
+def _statuses_of(record: ChangeRecord, change: Any) -> list[str]:
+    return [i.status for r in record.scale_results for i in r.items if i.item_id == change.item_id and i.action == change.action]
+
+
+def after_note(record: ChangeRecord, success: bool, ended_a_miss: bool = False) -> str | None:
+    """The note about Square and the labels, on any finished change where the catalog moved, or a settle changed what a scale sells.
+
+    A partial change moves the catalog too, and a settle can be what finishes it, so neither may go quiet.
+    """
+    actions = [c.action for c in record.changes]
+    note = after_success_note(actions, success)
+    if note:
+        return note
+    for change in record.changes:
+        statuses = _statuses_of(record, change)
+        landed = any(s in _LANDED for s in statuses)
+        if change.action == "settle_accept" and landed:
+            return AFTER_TAKE_SCALE_NOTE
+        if change.action == "settle_push" and landed:
+            if not change.fields or _SELLING_FIELDS.intersection(change.fields):
+                return AFTER_SETTLE_SALE_NOTE
+            return AFTER_SETTLE_MISS_NOTE if ended_a_miss else None
+        if change.action in _SALE_ACTIONS and (landed or (change.action == "add" and any(s in _UNSETTLED for s in statuses))):
+            return AFTER_PARTIAL_NOTE
+    return None
+
+
 def status_words(status: str) -> tuple[str, str]:
     return SCALE_WORDS.get(status, ("something unexpected happened. Look at the scale.", BAD))
 
@@ -435,23 +479,127 @@ def plu_roles(plu: str, old_plus: Any, repeat: dict[str, Any]) -> tuple[str, lis
     return target, seen
 
 
+ROLL_UP_ABOVE = 5  # more missed changes than this on one scale get one card, with every row still in the data
+DID_NOT_ANSWER = "Did not answer. Tell Bart."
+CHECK_THEN_CALL = "Check this scale, then call Bart."
+LIST_FAILED_TEXT = "The list of work not finished could not be built."
+LIST_FAILED_MORE = "Do not take this as all clear. Tell Bart."
+
+
+def _plu_phrase(plu: Any) -> str:
+    return f"PLU {plu}" if _FOUR_DIGITS.fullmatch(str(plu)) else "an item"
+
+
+def _missed_kind(u: Any) -> str:
+    """Which words a missed change gets. Each of these needs its own card, because each asks for something different."""
+    if getattr(u, "may_be_frozen", False) is True:
+        return "frozen"
+    if getattr(u, "catalog_took_it", True) is not True:
+        return "not_taken"
+    return "fixable"
+
+
+def _missed_card(u: Any) -> dict[str, Any]:
+    """One missed change on one scale."""
+    plu_text = _plu_phrase(u.plu)
+    card: dict[str, Any] = {
+        "kind": u.kind, "item_id": u.item_id, "plu": u.plu, "scales": [u.scale], "old_plus": [], "repeat": dict(u.repeat),
+        "target": u.plu, "stopping": [], "rolled_up": False, "no_fix": False, "button": None,
+    }
+    kind = _missed_kind(u)
+    if kind == "frozen":
+        card["no_fix"] = True
+        card["text"] = f"The newest change to {plu_text} has not been confirmed on {u.scale}."
+        card["more"] = f"{DID_NOT_ANSWER} Do not check or change {u.scale} until someone has looked at it."
+    elif kind == "not_taken":
+        card["no_fix"] = True
+        card["text"] = f"A change to {plu_text} did not finish, and our list did not take it."
+        card["more"] = f"{u.scale} may hold the new value. {CHECK_THEN_CALL} Putting our list on {u.scale} would put the old value back."
+    elif getattr(u, "differs_in", ()):
+        card["text"] = f"{u.scale} may differ from our list on {plu_text}."
+        card["more"] = f"The last record sent to {u.scale} did not bring it to our list. Nobody may have read it since. Look at the scale."
+        card["button"] = f"Fix this on {u.scale}"
+    else:
+        card["text"] = f"The newest change to {plu_text} has not been confirmed on {u.scale}."
+        card["more"] = f"Until it is, {u.scale} may have the old price or may not have the item. Look at the scale."
+        card["button"] = f"Fix this on {u.scale}"
+    return card
+
+
+def _rolled_up_card(scale: str, rows: list[Any], kind: str) -> dict[str, Any]:
+    """Many missed changes on one scale, such as a failed reload. One check of that scale clears any that match."""
+    count = len(rows)
+    card: dict[str, Any] = {
+        "kind": "missed_change", "item_id": None, "plu": None, "scales": [scale], "old_plus": [], "repeat": {}, "target": None, "stopping": [],
+        "rolled_up": True, "no_fix": True, "button": None, "count": count,
+        "rows": [{"plu": u.plu, "item_id": u.item_id, "status": u.status, "change_id": u.change_id} for u in rows],
+    }
+    if kind == "frozen":
+        card["text"] = f"{count} items have not been confirmed on {scale}."
+        card["more"] = f"{DID_NOT_ANSWER} Do not check or change {scale} until someone has looked at it."
+    elif kind == "not_taken":
+        card["text"] = f"{count} changes did not finish, and our list did not take them."
+        card["more"] = f"{scale} may hold the new values. {CHECK_THEN_CALL} Putting our list on {scale} would put the old values back."
+    else:
+        card["text"] = f"{count} items have not been confirmed on {scale}."
+        card["more"] = f"Tell Bart. One check of {scale} clears any that match our list, and a reload at the command line puts them all right."
+    return card
+
+
+def missed_settle_words(u: Any, read_since: bool, differs: list[str]) -> dict[str, Any]:
+    """For the item page and the settle screen, when this scale has a missed change.
+
+    Nobody knows what it holds unless a read came after that change, so it never says it holds something different until then.
+    """
+    scale = u.scale
+    if getattr(u, "differs_in", ()):
+        status_text = f"The last record sent to {scale} did not bring it to our list."
+    else:
+        status_text = f"Last change on {scale}: {status_words(u.status)[0]}"
+    kind = _missed_kind(u)
+    if kind == "frozen":
+        return {"kind": kind, "status_text": status_text, "stop_text": f"{DID_NOT_ANSWER} Do not check or change {scale} until someone has looked at it.", "read_since": read_since, "text": ""}
+    if kind == "not_taken":
+        return {
+            "kind": kind, "status_text": status_text, "read_since": read_since, "text": "",
+            "stop_text": f"Our list did not take this change. {scale} may hold the new value. {CHECK_THEN_CALL} Putting our list on {scale} would put the old value back.",
+        }
+    if read_since and differs:
+        text = f"When {scale} was last read, it differed from our list in: {field_list(differs)}."
+    else:
+        text = f"{scale} may differ from our list. Nobody has read it since this change."
+    return {"kind": kind, "status_text": status_text, "read_since": read_since, "text": text, "stop_text": ""}
+
+
 def unfinished_cards(work: list[Any]) -> list[dict[str, Any]]:
-    """Deletes and PLU changes some scale has not confirmed, one card for each item, in staff words.
+    """Changes some scale has not confirmed, one card for each item, in staff words.
 
     This is from the catalog with no scale contact, so it says what may be so. The old PLU is only
     called gone once the scale has confirmed it. A repeat of a delete names the PLU, never the id, so
     it can only ever hit that item: if the id now holds something else, the library refuses it.
+    A missed change is settled one scale at a time, so it gets one card for each scale, and many on one
+    scale roll up into one card. One the catalog did not take, or from a scale that did not answer,
+    has no fix button, because tapping it would undo the change or read that scale again.
     """
-    groups: dict[tuple[str, int, Any], dict[str, Any]] = {}
+    groups: dict[tuple[str, int, Any, Any], dict[str, Any]] = {}
+    missed: dict[str, dict[str, list[Any]]] = {}
+    first: list[dict[str, Any]] = []
     for u in work:
-        card = groups.setdefault((u.kind, u.item_id, u.repeat.get("plu")), {
+        if u.kind == "list_failed":
+            first.append({"kind": u.kind, "item_id": None, "plu": None, "scales": [], "old_plus": [], "repeat": {}, "target": None, "stopping": [],
+                          "rolled_up": False, "no_fix": True, "button": None, "text": LIST_FAILED_TEXT, "more": LIST_FAILED_MORE})
+            continue
+        if u.kind == "missed_change":
+            missed.setdefault(u.scale, {}).setdefault(_missed_kind(u), []).append(u)
+            continue
+        card = groups.setdefault((u.kind, u.item_id, u.repeat.get("plu"), u.repeat.get("scale")), {
             "kind": u.kind, "item_id": u.item_id, "plu": u.plu, "scales": [], "old_plus": [], "repeat": dict(u.repeat),
         })
         card["scales"].append(u.scale)
         for old in u.old_plus:
             if old not in card["old_plus"]:
                 card["old_plus"].append(old)
-    cards = []
+    cards = first
     for card in groups.values():
         where = _list_text(card["scales"])
         if card["kind"] == "delete":
@@ -474,6 +622,12 @@ def unfinished_cards(work: list[Any]) -> list[dict[str, Any]]:
                                 "and both may work there until this is finished. Look at the scale.")
             card["button"] = f"Repeat the PLU change to {target}"
         cards.append(card)
+    for scale, kinds in missed.items():
+        for kind, rows in kinds.items():
+            if len(rows) > ROLL_UP_ABOVE:
+                cards.append(_rolled_up_card(scale, rows, kind))
+            else:
+                cards.extend(_missed_card(u) for u in rows)
     return cards
 
 def item_card(item: Item) -> dict[str, str | int]:

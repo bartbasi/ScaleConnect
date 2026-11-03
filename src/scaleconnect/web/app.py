@@ -312,7 +312,9 @@ def create_app(
         view = service.get_item(plu=plu)
         shown = view.item
         # From the catalog, with no scale contact. A scale behind a PLU change must be finished, never settled.
-        behind = {(u.scale, u.item_id): u for u in service.list_unfinished() if u.kind == "plu_change"}
+        unfinished_now = service.list_unfinished()
+        behind = {(u.scale, u.item_id): u for u in unfinished_now if u.kind == "plu_change"}
+        missed = {(u.scale, u.item_id): u for u in unfinished_now if u.kind == "missed_change"}
         rows = []
         for info in service.list_scales():
             state_ = view.scales.get(info.name)
@@ -328,6 +330,7 @@ def create_app(
                 "can_fix": False,
                 "repeat": None,
                 "repeat_meta": None,
+                "missed": None,
             }
             if state_ is not None:
                 read = state_.last_read
@@ -364,6 +367,18 @@ def create_app(
                             f"It may be on {target} or still on {late.plu}. Repeat the PLU change. Do not settle it.")
                 row.update(flag="unfinished", can_fix=False, repeat=dict(late.repeat), text=said,
                            repeat_meta={"plu": target, "old": stopping})
+            elif (info.name, shown.id) in missed:
+                # An old read that matched, or differed, says nothing about a change made since. Settling is how this one ends.
+                miss = missed[(info.name, shown.id)]
+                read_since = read_after(row["last_read_at"], miss.at)
+                said = words.missed_settle_words(miss, read_since, row["differs"])
+                row["missed"] = said
+                if said["kind"] != "fixable":
+                    row.update(flag="unsure", can_fix=False, text=said["stop_text"])
+                else:
+                    if row["flag"] in ("none", "same", "unsure") or not read_since:
+                        row.update(flag="unsure", text=f"{said['text']} Look at the scale.")
+                    row.update(can_fix=row["can_fix"] or info.write_enabled)
             rows.append(row)
         interrupted = []
         for change_id in view.interrupted_change_ids:
@@ -380,6 +395,13 @@ def create_app(
         }
 
     # ------------------------------------------------------------ preview
+
+    def read_after(read_at: str | None, change_at: str | None) -> bool:
+        """The read came after the change. Times are to the second, so the same second does not count."""
+        try:
+            return datetime.fromisoformat(read_at or "") > datetime.fromisoformat(change_at or "")
+        except (TypeError, ValueError):
+            return False
 
     def scale_names() -> list[str]:
         return [s.name for s in service.list_scales()]
@@ -449,7 +471,7 @@ def create_app(
 
     @app.get("/api/unfinished")
     def unfinished_work():
-        """Deletes and PLU changes some scale has not confirmed. From the catalog, no scale contact."""
+        """Changes some scale has not confirmed. From the catalog and its log, no scale contact."""
         return {"items": words.unfinished_cards(service.list_unfinished())}
 
     @app.post("/api/check")
@@ -607,6 +629,8 @@ def create_app(
             change_id=record.change_id, requested_by=record.requested_by, started_at=record.started_at,
             may_have_stopped=(not finished and not stalled and job is None),
         )
+        if finished:
+            out["after_note"] = words.after_note(record, out["success"], service.settle_ended_a_miss(record))
         return out
 
     @app.get("/api/send/{preview_id}")

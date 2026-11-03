@@ -136,6 +136,7 @@ A validation failure also has an `errors` list inside `error`.
 
 - `preview` and `settle` with errors print the full preview, then exit 3.
 - `apply` prints the change record. Read its `display` line and each scale's `status`. Do not look at `success` alone.
+- `compare` and `read` give each scale `read_repeated`, `preview` and `settle` give `scales_read_repeated`, and `apply` gives each scale result `read_repeated`. Each says a read of that scale needed a second try.
 - A bad command line also prints JSON, with `"code": "usage"`, and exits 2.
 - An unexpected error prints only the error type, with `"code": "unexpected"`, and exits 1. The text of the exception is not printed, because it could hold something from the config.
 - `--help` is the one exception. It prints usage text, not JSON, and exits 0.

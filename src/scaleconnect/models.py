@@ -391,6 +391,7 @@ class ScaleComparison:
     read_at: str | None = None
     differences: tuple[Drift, ...] = ()
     may_be_frozen: bool = False  # it gave no reply. Do not read it again until a person has checked it
+    read_repeated: bool = False  # the read needed a second try
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -401,6 +402,7 @@ class ScaleComparison:
             "read_at": self.read_at,
             "differences": [d.to_dict() for d in self.differences],
             "may_be_frozen": self.may_be_frozen,
+            "read_repeated": self.read_repeated,
         }
 
 
@@ -456,6 +458,7 @@ class ScaleRead:
     complete: bool = False  # the read reached the end of the table
     records: tuple[HeldRecord, ...] = ()
     may_be_frozen: bool = False
+    read_repeated: bool = False  # the read needed a second try
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -467,6 +470,7 @@ class ScaleRead:
             "complete": self.complete,
             "records": [r.to_dict() for r in self.records],
             "may_be_frozen": self.may_be_frozen,
+            "read_repeated": self.read_repeated,
         }
 
 
@@ -557,6 +561,7 @@ class Preview:
     errors: tuple[PreviewError, ...]
     drift: tuple[Drift, ...] = ()
     scales_read: tuple[str, ...] = ()
+    scales_read_repeated: tuple[str, ...] = ()  # scales whose read needed a second try
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -571,6 +576,7 @@ class Preview:
             "errors": [e.to_dict() for e in self.errors],
             "drift": [d.to_dict() for d in self.drift],
             "scales_read": list(self.scales_read),
+            "scales_read_repeated": list(self.scales_read_repeated),
         }
 
 
@@ -608,6 +614,7 @@ class ScaleResult:
     mismatches: tuple[Drift, ...] = ()
     may_be_frozen: bool = False  # it gave no reply. Do not read it again until a person has checked it
     fillers_landed: tuple[int, ...] = ()  # placeholders the scale took to leave no gap. Not in items
+    read_repeated: bool = False  # a read of this scale in this change needed a second try
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -621,6 +628,7 @@ class ScaleResult:
             "mismatches": [d.to_dict() for d in self.mismatches],
             "may_be_frozen": self.may_be_frozen,
             "fillers_landed": list(self.fillers_landed),
+            "read_repeated": self.read_repeated,
         }
 
     @classmethod
@@ -636,6 +644,7 @@ class ScaleResult:
             mismatches=tuple(Drift.from_dict(d) for d in data.get("mismatches", [])),
             may_be_frozen=bool(data.get("may_be_frozen", False)),
             fillers_landed=tuple(data.get("fillers_landed", [])),
+            read_repeated=bool(data.get("read_repeated", False)),
         )
 
 
@@ -690,15 +699,21 @@ class ReloadResult:
 
 @dataclass(frozen=True)
 class UnfinishedWork:
-    """A delete or a PLU change one scale has not confirmed. From the catalog, with no scale contact."""
+    """A change one scale has not confirmed. From the catalog and its log, with no scale contact."""
 
     scale: str
-    kind: str  # delete or plu_change
+    kind: str  # delete, plu_change, missed_change, or list_failed when the list could not be built
     item_id: int
     plu: str  # the PLU the catalog has, or for a delete the PLU it had
-    old_plus: tuple[str, ...]  # what the scale may still hold. For a delete, the item's own PLU
-    repeat: dict[str, Any]  # the change to preview, to finish this
+    old_plus: tuple[str, ...]  # what the scale may still hold. For a delete, the item's own PLU. For a missed change, nothing known
+    repeat: dict[str, Any]  # what to preview, to finish this. A missed change names the settle tool in "tool", and its arguments
     message: str
+    status: str = ""  # missed_change only: what that change ended as on this scale
+    change_id: str = ""  # missed_change only: the change this scale missed
+    catalog_took_it: bool = True  # missed_change only. False: the scale may hold the new value, and the catalog the old
+    may_be_frozen: bool = False  # this scale gave no reply on a logged change, and that miss still stands
+    differs_in: tuple[str, ...] = ()  # the last record sent there differs from the catalog in these fields, whatever its status
+    at: str = ""  # missed_change only: when that change ended on this scale
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -709,6 +724,12 @@ class UnfinishedWork:
             "old_plus": list(self.old_plus),
             "repeat": dict(self.repeat),
             "message": self.message,
+            "status": self.status,
+            "change_id": self.change_id,
+            "catalog_took_it": self.catalog_took_it,
+            "may_be_frozen": self.may_be_frozen,
+            "differs_in": list(self.differs_in),
+            "at": self.at,
         }
 
 
