@@ -211,23 +211,58 @@ def is_left_out(result: Any) -> bool:
     return getattr(result, "status", None) == "not_available" and bool(items) and all(i.status == "not_sent" for i in items)
 
 
-def left_out_text(names: list[str]) -> str:
+def _silence_text(names: list[str], how: dict[str, str] | None, when: str) -> str:
+    """Why scales are left alone, in short sentences. how is frozen_how: unreachable means the connect failed,
+    which can be the WiFi or a frozen scale. Anything else means it did not answer."""
+    how = how or {}
+    no_connect = [n for n in names if how.get(n) == "unreachable"]
+    silent = [n for n in names if how.get(n) != "unreachable"]
+    parts = []
+    if silent:
+        who = ("It" if len(silent) == 1 else "They") if not no_connect else _list_text(silent)
+        parts.append(f"{who} did not answer {when}.")
+    if no_connect:
+        whom = ("it" if len(no_connect) == 1 else "them") if not silent else _list_text(no_connect)
+        parts.append(f"We could not connect to {whom} {when}.")
+    return " ".join(parts)
+
+
+def left_out_text(names: list[str], how: dict[str, str] | None = None) -> str:
     """Said at the top of a review and of a result. The change goes to the other scales."""
     where = _list_text(names)
-    return f"{where} is left out. It did not answer last time. Tell Bart."
+    verb = "is" if len(names) == 1 else "are"
+    return f"{where} {verb} left out. {_silence_text(names, how, 'last time')} Tell Bart."
 
 
 LEFT_OUT_ROW = "left out. It did not answer last time, so nothing was sent to it. Tell Bart."
+LEFT_OUT_ROW_NO_CONNECT = "left out. We could not connect to it last time, so nothing was sent to it. Tell Bart."
 LEFT_OUT_NOW = "It still has what it had. It stays on the Not finished list until Bart has looked at it."
+REBOOT_NO_CONNECT = "Could not connect to the scale. It may be off the WiFi, or frozen. Tell Bart."
 
 
-def scale_row(result: ScaleResult) -> dict[str, Any]:
-    """One finished scale as a line for staff."""
+def left_out_row_text(name: str, how: str | None = None) -> str:
+    """The line for one left out scale, on a review and on a result."""
+    return f"{name}: {LEFT_OUT_ROW_NO_CONNECT if how == 'unreachable' else LEFT_OUT_ROW}"
+
+
+def left_out_review_text(how: str | None = None) -> str:
+    """The box for one left out scale on a review. The scale's name is the box's title."""
+    why = "We could not connect to it last time." if how == "unreachable" else "It did not answer last time."
+    return f"Left out. {why} Nothing is read or sent to it. Tell Bart."
+
+
+def reboot_text(status: Any, how: str | None = None) -> str:
+    """The line shown for a scale that may be frozen. A failed connect gets its own words."""
+    return REBOOT_NO_CONNECT if status == "unreachable" or how == "unreachable" else REBOOT_LINE
+
+
+def scale_row(result: ScaleResult, how: str | None = None) -> dict[str, Any]:
+    """One finished scale as a line for staff. how is frozen_how for this scale, if known."""
     words, severity = status_words(result.status)
     now: str | None = None
     if is_left_out(result):
         return {
-            "scale": result.scale, "status": "left_out", "text": f"{result.scale}: {LEFT_OUT_ROW}", "severity": BAD, "state": "done",
+            "scale": result.scale, "status": "left_out", "text": left_out_row_text(result.scale, how), "severity": BAD, "state": "done",
             "now": LEFT_OUT_NOW, "message": "", "may_be_frozen": False, "drift_tokens": [],
         }
     refused = result.status == "drift_refused"
@@ -278,6 +313,7 @@ def scale_row(result: ScaleResult) -> dict[str, Any]:
         "now": now,
         "message": result.message,
         "may_be_frozen": result.may_be_frozen is True,
+        "reboot": reboot_text(result.status, how) if result.may_be_frozen is True else None,
         "drift_tokens": [d.ack_token for d in result.drift if d.ack_token],
     }
 
@@ -298,6 +334,7 @@ def read_row(scale: str, status: str, may_be_frozen: bool) -> dict[str, Any]:
     return {
         "scale": scale, "status": status, "severity": severity, "may_be_frozen": may_be_frozen is True,
         "text": f"{scale}: {READ_WORDS.get(status, 'could not be read.')}",
+        "reboot": reboot_text(status) if may_be_frozen is True else None,
     }
 
 
@@ -425,10 +462,11 @@ def normalize_price(value: Any) -> tuple[str | None, str | None]:
 _PLU_IN_TEXT = re.compile(r"\bPLU (\d{4})\b")
 
 
-def plain_error(error: dict[str, Any], unfinished: bool = False) -> dict[str, Any]:
+def plain_error(error: dict[str, Any], unfinished: bool = False, how: dict[str, str] | None = None) -> dict[str, Any]:
     """Staff words for the refusals that come with a PLU. Other errors keep the library's own message.
 
-    unfinished: the refusal came with a drift marked unfinished_plu_change.
+    unfinished: the refusal came with a drift marked unfinished_plu_change. how: frozen_how, for a scale
+    that may be frozen, so a failed connect is not called a scale that did not answer.
     """
     code = error.get("code")
     message = str(error.get("message") or "")
@@ -475,14 +513,14 @@ def plain_error(error: dict[str, Any], unfinished: bool = False) -> dict[str, An
     elif code == "scale_may_be_frozen":
         # From the library, when a scale stopped answering between the page's own check and the apply lock.
         names = [n for n in (error.get("scales") or []) if isinstance(n, str)]
-        text = frozen_send_refusal(names) if names else f"{DID_NOT_ANSWER} A scale did not answer earlier, so nothing was read or sent."
+        text = frozen_send_refusal(names, how) if names else f"{DID_NOT_ANSWER} A scale did not answer earlier, so nothing was read or sent."
     if text is None:
         return error
     return {**error, "message": text}
 
 
-def plain_errors(errors: list[dict[str, Any]], unfinished: bool = False) -> list[dict[str, Any]]:
-    return [plain_error(e, unfinished) for e in errors]
+def plain_errors(errors: list[dict[str, Any]], unfinished: bool = False, how: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    return [plain_error(e, unfinished, how) for e in errors]
 
 
 def _list_text(names: list[str]) -> str:
@@ -518,20 +556,26 @@ def frozen_more(names: list[str]) -> str:
     return f"Do not check or change {where} until someone has looked at it."
 
 
-def frozen_refusal(names: list[str]) -> dict[str, Any]:
+def frozen_refusal(names: list[str], how: dict[str, str] | None = None) -> dict[str, Any]:
     """The page refuses a review when every scale it would reach may be frozen, or a settle on such a scale.
-    Bart clears it through Claude or the command line."""
+    Bart clears it through Claude or the command line. how is frozen_how, so a failed connect says so."""
+    how = how or {}
     where = _list_text(names)
+    stop = COULD_NOT_CONNECT if names and all(how.get(n) == "unreachable" for n in names) else DID_NOT_ANSWER
+    if any(how.get(n) == "unreachable" for n in names):
+        why = f"{_silence_text(names, how, 'earlier')} So nothing was read or sent."
+    else:
+        why = f"{where} did not answer earlier, so nothing was read or sent."
     return {
         "code": "scale_may_be_frozen", "index": None, "field": None, "may_be_frozen": False, "scales": list(names),
-        "message": f"{DID_NOT_ANSWER} {where} did not answer earlier, so nothing was read or sent. {frozen_more(names)}",
+        "message": f"{stop} {why} {frozen_more(names)}",
     }
 
 
-def frozen_send_refusal(names: list[str]) -> str:
+def frozen_send_refusal(names: list[str], how: dict[str, str] | None = None) -> str:
     """A review that would reach a scale that stopped answering after it was made. A new review leaves that scale out."""
     where = _list_text(names)
-    return f"{frozen_refusal(names)['message']} Go back and review it again. {where} will be left out."
+    return f"{frozen_refusal(names, how)['message']} Go back and review it again. {where} will be left out."
 
 
 def stop_words(how: str | None = None) -> str:

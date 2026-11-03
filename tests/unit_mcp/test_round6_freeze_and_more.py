@@ -56,7 +56,12 @@ def test_a_freeze_with_no_read_since_still_spreads_to_every_row_on_that_scale(ma
     session = Session(env)
     frozen_miss(env, session)
     env.fakes["B"].clear_faults()
-    junk_at_apply(env, session, [{"action": "edit", "target_plu": "1002", "price": "22.00"}])
+    # Round 9 N1: the next change leaves B out, with a warning to acknowledge, and B misses it too.
+    seen = len(env.fakes["B"].messages)
+    preview = session.preview([{"action": "edit", "target_plu": "1002", "price": "22.00"}], read_scales=False)
+    assert preview["left_out"] == ["B"]
+    session.apply(preview, acknowledge_warnings=True)
+    assert len(env.fakes["B"].messages) == seen
     assert {r[3] for r in rows(env)} == {True} and len(rows(env)) == 2
 
 

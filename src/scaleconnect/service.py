@@ -583,6 +583,7 @@ class ScaleConnectService:
         scales: Sequence[str] | None = None,
         read_scales: bool = False,
         avoid_frozen: bool = False,
+        leave_out_frozen: bool = False,
     ) -> Preview:
         """Checks changes and changes nothing. Bad input comes back in errors. It does not raise.
 
@@ -591,15 +592,22 @@ class ScaleConnectService:
         avoid_frozen leaves out every scale that may be frozen, as the web page asks. Each one left out
         gets a scale_left_out warning, is named in left_out, and stays on the unfinished list as missing
         this change once it is applied. If no scale with writes on is left, it refuses with scale_may_be_frozen.
+        leave_out_frozen does the same for the MCP server and the command line, whether scales names the
+        scale or not. Only a compare that names that scale, or a reload, clears the flag.
         """
         now = self._clock()
         created_at = now.isoformat(timespec="seconds")
         targets, errors = self._target_scales(scales)
         left_out: list[str] = []
-        if avoid_frozen and not errors:
+        if (avoid_frozen or leave_out_frozen) and not errors:
             frozen = set(self.scales_may_be_frozen())
             left_out = [s.name for s in targets if s.name in frozen and (s.write_enabled is True or s.read_enabled is True)]
             targets = tuple(s for s in targets if s.name not in left_out)
+            if scales is not None:
+                # A flagged scale outside scales misses this change too, as below.
+                chosen = {s.name for s in targets} | set(left_out)
+                left_out += [s.name for s in self._current_scales() if s.name not in chosen and s.name in frozen and s.write_enabled is True]
+                left_out = self._config_order(left_out)
             if left_out and not any(s.write_enabled is True for s in targets):
                 errors.append(PreviewError(
                     "scale_may_be_frozen",
@@ -663,8 +671,9 @@ class ScaleConnectService:
                 warnings.append(
                     PreviewWarning(
                         "scale_left_out",
-                        f"{', '.join(left_out)} gave no reply earlier, so this change leaves it out. Nothing is read or sent there. "
-                        "Unless its writes are off, it stays on the unfinished list as missing this change until a person has checked it.",
+                        f"{', '.join(left_out)} gave no reply earlier, so this change leaves {'it' if len(left_out) == 1 else 'them'} out. "
+                        "Nothing is read or sent there. Unless its writes are off, each stays on the unfinished list as missing this "
+                        "change until a person has checked it.",
                         True,
                     )
                 )
@@ -694,7 +703,7 @@ class ScaleConnectService:
                         )
                     )
             if read_scales:
-                drift, scales_read, fills = self._read_for_preview(targets, plans, warnings, repeats, avoid_frozen=avoid_frozen)
+                drift, scales_read, fills = self._read_for_preview(targets, plans, warnings, repeats, avoid_frozen=avoid_frozen or leave_out_frozen)
 
         scale_names = tuple(s.name for s in targets)
         if errors:
@@ -1389,15 +1398,28 @@ class ScaleConnectService:
         acknowledge_drift: Sequence[str] = (),
         requested_by: str | None = None,
         avoid_frozen: bool = False,
+        leave_out_frozen: bool = False,
     ) -> ChangeRecord:
         """avoid_frozen refuses with ScaleMayBeFrozen, under the apply lock and before anything is sent,
-        if any scale this preview names may be frozen. The web page asks for it."""
+        if any scale this preview names may be frozen. The web page asks for it.
+
+        leave_out_frozen, for the MCP server and the command line, checks the same list under the lock,
+        and leaves out any scale that may be frozen now. Nothing is read or sent there, and it gets the
+        result a preview's left out scale gets. It refuses only if no scale it would contact is left."""
         with _apply_lock(self._lock_path):
             tokens = frozenset(t for t in acknowledge_drift if isinstance(t, str))
-            return self._apply_locked(preview_id, acknowledge_warnings is True, tokens, requested_by, avoid_frozen is True)
+            return self._apply_locked(
+                preview_id, acknowledge_warnings is True, tokens, requested_by, avoid_frozen is True, leave_out_frozen is True
+            )
 
     def _apply_locked(
-        self, preview_id: str, acknowledged: bool, tokens: frozenset[str], requested_by: str | None, avoid_frozen: bool = False
+        self,
+        preview_id: str,
+        acknowledged: bool,
+        tokens: frozenset[str],
+        requested_by: str | None,
+        avoid_frozen: bool = False,
+        leave_out_frozen: bool = False,
     ) -> ChangeRecord:
         restart = self.config_changed()
         if restart:
@@ -1438,7 +1460,8 @@ class ScaleConnectService:
                 raise InterruptedChange(
                     f"Change {change_id} touched these items and never finished. Run compare_scales, then resolve it."
                 )
-        if avoid_frozen:
+        late: list[str] = []
+        if avoid_frozen or leave_out_frozen:
             # Under the lock, so a freeze another process logged since the preview is seen before anything goes out.
             # Only a scale this apply would contact counts: writes on, or reads on for a settle that takes the
             # scale's record. One with both off gets skipped_not_write_enabled and is never contacted, so it
@@ -1449,18 +1472,22 @@ class ScaleConnectService:
                 if by_name[n].write_enabled is True or (takes_scale and by_name[n].read_enabled is True)
             }
             frozen_now = [n for n in self.scales_may_be_frozen() if n in contacted]
-            if frozen_now:
+            if frozen_now and (avoid_frozen or not contacted - set(frozen_now)):
                 raise ScaleMayBeFrozen(
                     f"{', '.join(frozen_now)} gave no reply after this preview was made, so nothing was read or sent. Make a new preview.",
                     frozen_now,
                 )
+            if frozen_now:
+                # The MCP server and the command line leave it out, as a preview does, and the change goes to the others.
+                late = frozen_now
+                names = [n for n in names if n not in late]
 
         targets = [by_name[n] for n in self._config_order(names)]
         actor = (requested_by or payload.get("requested_by") or "unknown").strip() or "unknown"
         writes = [p for p in plans if p.difference.action in _WRITE_ACTIONS]
-        # Scales the preview left out because they may be frozen. Nothing goes to them. Each gets a result
-        # that says so, which leaves it on the unfinished list as missing this change.
-        left_out = [n for n in self._config_order(payload.get("left_out") or []) if n not in names]
+        # Scales the preview left out because they may be frozen, and any found so under the lock just now. Nothing
+        # goes to them. Each gets a result that says so, which leaves it on the unfinished list as missing this change.
+        left_out = [n for n in self._config_order([*(payload.get("left_out") or []), *late]) if n not in names]
 
         backup_notes = self._backup_first_writes(targets, writes, preview_id, actor)
 
@@ -2303,16 +2330,25 @@ class ScaleConnectService:
 
     # ------------------------------------------------------------ comparing
 
-    def compare_scales(self, scales: Sequence[str] | None = None) -> list[ScaleComparison]:
+    def compare_scales(self, scales: Sequence[str] | None = None, *, leave_out_frozen: bool = False) -> list[ScaleComparison]:
         """Read each enabled scale and list where it differs from the catalog. Writes nothing.
 
         A scale with neither flag on is not contacted. This takes the apply lock, and a
         full read at the default pace takes about 30 seconds per scale.
+
+        leave_out_frozen leaves out, under the apply lock, any scale that may be frozen: it comes back
+        not_contacted with may_be_frozen true, and is not read. The MCP server and the command line ask
+        for it when no scale is named, so only a compare that names that scale can clear its flag.
         """
         chosen = self._named_scales(scales)
         out: list[ScaleComparison] = []
         with _apply_lock(self._lock_path):
+            # Under the lock, so a freeze another process logged a moment ago is seen.
+            frozen = set(self.scales_may_be_frozen()) if leave_out_frozen else set()
             for scale in chosen:
+                if scale.name in frozen and (scale.write_enabled is True or scale.read_enabled is True):
+                    out.append(ScaleComparison(scale.name, "not_contacted", _frozen_skip_words(scale.name), may_be_frozen=True))
+                    continue
                 out.append(self._compare_one(scale))
         return out
 
@@ -2467,6 +2503,8 @@ class ScaleConnectService:
                 errors=(PreviewError(code, message, 0, field, frozen),),
                 drift=drift,
                 scales_read_repeated=tuple(sorted(repeats)),
+                # Not read because it may be frozen, so it is named as left out.
+                left_out=(scale,) if code == "scale_may_be_frozen" and isinstance(scale, str) else (),
             )
 
         if take not in ("scale", "catalog"):
@@ -2656,13 +2694,14 @@ class ScaleConnectService:
         )
 
     def mark_orphans_from_read(
-        self, scale: str, *, ids: Sequence[int] | None = None, note: str = "", requested_by: str = "unknown"
+        self, scale: str, *, ids: Sequence[int] | None = None, note: str = "", requested_by: str = "unknown", avoid_frozen: bool = False
     ) -> OrphanMarks:
         """Read one scale, and record what it holds that the catalog does not list as orphans there.
 
         Real tables can be full, so an add has nowhere to land until this is done. It changes
         nothing on the scale. Give ids to mark only those. An add can then choose one with
-        replace_orphan_id, and a preview says so before anything is replaced.
+        replace_orphan_id, and a preview says so before anything is replaced. avoid_frozen leaves
+        the scale alone, under the apply lock, if it may be frozen: not_contacted with may_be_frozen true.
         """
         chosen = self._named_scales([scale])[0]
         if ids is not None and not all(isinstance(i, int) and not isinstance(i, bool) for i in ids):
@@ -2672,6 +2711,8 @@ class ScaleConnectService:
             return OrphanMarks(name, "not_contacted", f"{name}: contact is not enabled for this scale.")
         client = self._scale_factory(chosen, self._settings, sleep=self._sleep)
         with _apply_lock(self._lock_path):
+            if avoid_frozen and name in self.scales_may_be_frozen():
+                return OrphanMarks(name, "not_contacted", _frozen_skip_words(name), may_be_frozen=True)
             try:
                 identity = client.identify()
                 if not identity.ok:
@@ -2984,9 +3025,11 @@ class ScaleConnectService:
         """Keep a read that ended may_be_frozen, so the page, the unfinished list and Claude all see it,
         from any process, until a read of that scale answers. A logged change keeps its own. Never raises.
 
-        If the log cannot take the note, this process keeps it and still counts the scale as may be
-        frozen. It writes the note the next time it looks at the flags and the log works. A read of
-        that scale that answers ends it. Only a restart before then loses it, and the log says so."""
+        If the log cannot take the note, it is held in a small file in the state folder, one file per
+        note, and in this process too. Every process that looks at the flags reads those files, so the
+        web page and the MCP server both count the scale as may be frozen at once, and whichever looks
+        first writes the note to the log once it works. A read of that scale that answers, in any process,
+        ends it. If the file cannot be written either, only this process holds it, and the log says so."""
         if getattr(outcome, "may_be_frozen", False) is not True:
             return
         at = self._now_text()
@@ -2995,21 +3038,94 @@ class ScaleConnectService:
         try:
             self._catalog.note_read_no_reply(name, what, at, status)
         except Exception:
-            with self._unnoted_lock:
-                self._unnoted[name] = (what, at, status)
-            log.error(
-                "A read of %s got no reply, and that could not be noted in the log. This process counts %s as may be "
-                "frozen and will note it when the log works. A restart before then loses it, so look at %s.", name, name, name,
-            )
+            if self._hold_in_file(name, what, at, status):
+                # Not kept here as well, so a read of that scale that answers in another process ends it here too.
+                log.error(
+                    "A read of %s got no reply, and that could not be noted in the log. It is held in the state folder, "
+                    "so every process counts %s as may be frozen, and it goes in the log when the log works.", name, name,
+                )
+            else:
+                with self._unnoted_lock:
+                    self._unnoted[name] = (what, at, status)
+                log.error(
+                    "A read of %s got no reply, and that could not be noted in the log or in the state folder. Only this process "
+                    "counts %s as may be frozen until the log works. A restart before then loses it, so look at %s.", name, name, name,
+                )
+
+    def _held_dir(self) -> Path:
+        return Path(self._settings.state_dir) / "held_no_replies"
+
+    def _hold_in_file(self, name: str, what: str, at: str, status: str | None) -> bool:
+        """One file per note, written whole and then renamed, so no reader sees half of one. Never raises."""
+        try:
+            folder = self._held_dir()
+            folder.mkdir(parents=True, exist_ok=True)
+            final = folder / f"{uuid.uuid4().hex}.json"
+            temp = folder / f"{final.stem}.tmp"
+            temp.write_text(json.dumps({"scale": name, "what": what, "at": at, "status": status}), encoding="utf-8")
+            os.replace(temp, final)
+        except Exception:
+            return False
+        # The newest note per scale is enough, so the folder does not grow. Notes run under the apply lock, so no
+        # other note is being made now. Another process may be logging an older one: it then finds it gone, which is harmless.
+        for path, scale, _, _, _ in self._held_files():
+            if scale == name and path != final:
+                try:
+                    path.unlink()
+                except Exception:
+                    pass
+        return True
+
+    def _held_files(self) -> list[tuple[Path, str, str, str, str | None]]:
+        """Notes held in the state folder, by any process: (file, scale, what, at, status), oldest first."""
+        try:
+            paths = list(self._held_dir().glob("*.json"))
+        except Exception:
+            return []
+        names = {s.name for s in self._config.scales}
+        out = []
+        for path in paths:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                scale, what, at, status = data["scale"], data["what"], data["at"], data.get("status")
+            except FileNotFoundError:
+                continue  # another process wrote it to the log a moment ago
+            except Exception:
+                log.error("A held no reply note in the state folder could not be read: %s", path.name)
+                continue
+            if scale in names and isinstance(what, str) and isinstance(at, str):
+                out.append((path, scale, what, at, status if isinstance(status, str) else None))
+        out.sort(key=lambda note: note[3])
+        return out
 
     def _forget_unnoted(self, name: str) -> None:
-        """A read of this scale answered here, so a note this process still holds for it is old news."""
+        """A read of this scale answered, under the apply lock, so any note still held for it, here or in the
+        state folder, is old news. Every read and every note runs under that lock, so each note held was made
+        before this read."""
         with self._unnoted_lock:
             self._unnoted.pop(name, None)
+        for path, scale, _, _, _ in self._held_files():
+            if scale == name:
+                try:
+                    path.unlink()
+                except Exception:
+                    pass
 
     def _write_unnoted(self) -> dict[str, str]:
         """Try again to log each no reply the log could not take. Returns those still held, scale to how.
         A note whose scale has answered a read since, by a time that can be trusted, is dropped."""
+        for path, name, what, at, status in self._held_files():
+            try:
+                if not self._read_of_scale_since(name, at):
+                    self._catalog.note_read_no_reply(name, what, at, status)
+                path.unlink()
+            except FileNotFoundError:
+                pass  # another process took it first. A second copy in the log flags the same scale, which is harmless
+            except Exception:
+                continue
+            with self._unnoted_lock:
+                if self._unnoted.get(name) == (what, at, status):
+                    self._unnoted.pop(name, None)
         with self._unnoted_lock:
             held = dict(self._unnoted)
         for name, (what, at, status) in held.items():
@@ -3022,7 +3138,10 @@ class ScaleConnectService:
                 if self._unnoted.get(name) == (what, at, status):
                     self._unnoted.pop(name, None)
         with self._unnoted_lock:
-            return {name: no_reply_how(status) for name, (_, _, status) in self._unnoted.items()}
+            out = {name: no_reply_how(status) for name, (_, _, status) in self._unnoted.items()}
+        for _, name, _, _, status in self._held_files():
+            out[name] = no_reply_how(status)  # oldest first, so the newest held note decides
+        return out
 
     def _frozen_events(self) -> dict[str, str]:
         """Scales with a no reply, on a logged change, a reload or any other read, and no read of them that

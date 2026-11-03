@@ -126,7 +126,7 @@ If a scale did not answer while the review was checking it, the review says "Do 
 
 ### When a scale is left out
 
-If a scale did not answer earlier, a review leaves it out. A red box at the top of the review says so, for example: "FRONT is left out. It did not answer last time. Tell Bart." Tick the box that says you understand. The change then goes to the other scales only.
+If a scale did not answer earlier, a review leaves it out. A red box at the top of the review says so, for example: "FRONT is left out. It did not answer last time. Tell Bart." If the page could not reach the scale at all, it says "We could not connect to it last time" instead. That may only be the WiFi, but treat it the same way. Tick the box that says you understand. The change then goes to the other scales only.
 
 The result says the same thing at the top. The line for that scale says it was left out, and that nothing was sent to it. It still has the old price, or does not have the item.
 
@@ -160,11 +160,12 @@ You see one line for each scale.
 | No clear answer | We do not know if it changed. | Look at the scale. Do not send again. Tell Bart. |
 | The scale took it, but now shows something different | The scale holds other values than you asked for. | Look at the scale. Tell Bart. |
 | Could not connect | Nothing was sent. The scale is as it was. It may be off the WiFi, or frozen. | Check the scale is on and on WiFi. Tell Bart. The page leaves that scale out until he has looked at it. |
-| Could not read the scale first | Nothing was sent. | Try again in a minute. |
+| Could not read the scale first | Nothing was sent. | Try again in a minute. If the line below says it did not answer, or could not connect, do not try again. Tell Bart. |
 | This is not the scale it should be | Nothing was sent. | Tell Bart. |
 | The scale holds something different from our list | Nothing was sent. | Tell Bart. Do not force it. |
 | Changes are turned off for this scale | Nothing was sent to this scale. | Tell Bart. That scale still has the old price. |
 | Left out. It did not answer last time, so nothing was sent to it. | This scale did not answer earlier, so the change went to the other scales only. | Tell Bart. See "When a scale is left out". |
+| Left out. We could not connect to it last time, so nothing was sent to it. | The page could not reach this scale earlier. It may be off the WiFi, or frozen. The change went to the other scales only. | Tell Bart. See "When a scale is left out". |
 | This action is not available | Nothing was sent. | Ask Bart. |
 | An earlier PLU change did not finish on this scale | Nothing was sent. The scale is still on the old PLU, and the old PLU still works on it. | Tap "Repeat the PLU change". See "Not finished work". |
 | This scale gave back fewer items than our list has | Nothing was sent. The scale differs from our list, and a person must look at it. | Tell Bart. Do not force it. See "If a scale differs from the list". |
@@ -172,6 +173,7 @@ You see one line for each scale.
 | This change would have added empty slots, and no review showed that | Nothing was sent. | Go back. Review it again and wait until the scales say Checked. |
 | This scale already has that PLU on a different item | Nothing was sent. | Tell Bart. Do not force it. |
 | The scale did not answer. It may need a reboot. | The scale may have frozen. A reboot means turning it off and on again. | Tell Bart. See below. |
+| Could not connect to the scale. It may be off the WiFi, or frozen. | The page could not reach the scale. Nothing was sent. | Check the scale is on and on WiFi. Tell Bart. Do not try again. |
 
 At the top you see one line for the whole change.
 

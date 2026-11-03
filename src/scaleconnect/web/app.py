@@ -318,6 +318,23 @@ def create_app(
         wanted = set(among) if among else set(reached)
         return [n for n in reached if n in names and n in wanted]
 
+    def frozen_in(data: dict[str, Any]) -> bool:
+        """A review or settle that met a scale that may be frozen, in its warnings or errors."""
+        return any(x.get("may_be_frozen") or x.get("code") == "scale_may_be_frozen" for x in [*data.get("warnings", []), *data.get("errors", [])])
+
+    def add_reboot_words(data: dict[str, Any], how: dict[str, str]) -> None:
+        """The words shown for a warning or error that may mean a frozen scale. A failed connect gets its own words.
+        The scale is picked out by its name at the start of the library's message, which only holds config names."""
+        names = scale_names()
+        for x in [*data.get("warnings", []), *data.get("errors", [])]:
+            if x.get("may_be_frozen"):
+                said = str(x.get("message") or "")
+                scale = next((n for n in names if said.startswith(f"{n}:")), None)
+                x["reboot"] = words.reboot_text(None, how.get(scale) if scale else None)
+
+    def error_how(error: Any) -> dict[str, str]:
+        return service.frozen_how() if isinstance(error, dict) and error.get("code") == "scale_may_be_frozen" else {}
+
     @app.get("/api/item/{plu}")
     def item(plu: str):
         view = service.get_item(plu=plu)
@@ -462,7 +479,7 @@ def create_app(
         frozen = frozen_scales()
         if frozen and not problems and not any(s.write_enabled for s in service.list_scales() if s.name not in frozen):
             # Every scale this change would reach did not answer, so nothing is read or sent from here.
-            problems = [words.frozen_refusal(frozen)]
+            problems = [words.frozen_refusal(frozen, service.frozen_how())]
         if problems:
             return {
                 "ok": False, "preview_id": None, "created_at": None, "expires_at": None, "requested_by": "web",
@@ -472,8 +489,12 @@ def create_app(
         # A scale that did not answer is left out, under the apply lock too, and the change goes to the others.
         result = service.preview_changes(changes, requested_by="web", read_scales=body.read, avoid_frozen=True)
         data = result.to_dict()
-        data["errors"] = words.plain_errors(data.get("errors", []))
-        data["left_out_text"] = words.left_out_text(list(result.left_out)) if result.left_out else None
+        how = service.frozen_how() if result.left_out or frozen_in(data) else {}
+        data["errors"] = words.plain_errors(data.get("errors", []), how=how)
+        data["left_out_text"] = words.left_out_text(list(result.left_out), how) if result.left_out else None
+        # One line per left out scale on the review, in words that say how it stopped answering.
+        data["left_out_rows"] = {name: words.left_out_review_text(how.get(name)) for name in result.left_out}
+        add_reboot_words(data, how)
         return remember(result, data)
 
     @app.post("/api/settle/preview")
@@ -486,14 +507,16 @@ def create_app(
         if frozen:
             return {
                 "ok": False, "preview_id": None, "created_at": None, "expires_at": None, "requested_by": "web",
-                "scales": [], "differences": [], "warnings": [], "errors": [words.frozen_refusal(frozen)], "drift": [],
+                "scales": [], "differences": [], "warnings": [], "errors": [words.frozen_refusal(frozen, service.frozen_how())], "drift": [],
                 "scales_read": [], "repeat": None,
             }
         result = service.preview_settle_drift(scale=body.scale, take=body.take, plu=body.plu, requested_by="web", avoid_frozen=True)
         data = result.to_dict()
         behind = [d for d in data.get("drift", []) if words.is_unfinished_move(d)]
         unfinished = bool(behind) or any(e.get("code") == "plu_change_not_finished" for e in data.get("errors", []))
-        data["errors"] = words.plain_errors(data.get("errors", []), unfinished)
+        how = service.frozen_how() if frozen_in(data) else {}
+        data["errors"] = words.plain_errors(data.get("errors", []), unfinished, how)
+        add_reboot_words(data, how)
         data["repeat"] = None
         if unfinished:
             # Settling cannot finish a PLU change. Hand the page the repeat that can.
@@ -565,7 +588,7 @@ def create_app(
         frozen = frozen_scales(among=known["scales"])
         if frozen and jobs.get(body.preview_id) is None:
             # A review made before that scale stopped answering. Sending would read it before writing.
-            return _error(409, "scale_may_be_frozen", words.frozen_send_refusal(frozen), sent=False, scales=frozen)
+            return _error(409, "scale_may_be_frozen", words.frozen_send_refusal(frozen, service.frozen_how()), sent=False, scales=frozen)
         # A scale that holds a different product is never forced from here, whatever the page sent.
         tokens = [t for t in body.acknowledge_drift if t not in known["blocked"]]
         try:
@@ -582,7 +605,7 @@ def create_app(
             job.finished.wait(early_wait_seconds)  # quick refusals come back at once
         if job.state == "error":
             status = STATUS_FOR_CODE.get((job.error or {}).get("code", ""), 500)
-            return JSONResponse({"error": words.plain_error(job.error or {})}, status_code=status)
+            return JSONResponse({"error": words.plain_error(job.error or {}, how=error_how(job.error))}, status_code=status)
         return {"preview_id": body.preview_id, "started": started, "state": job.state}
 
     def age_seconds(text: str | None) -> float | None:
@@ -623,7 +646,7 @@ def create_app(
             out.update(heading="This change has not been sent.", severity=words.WARN)
             return out
         if job is not None and job.state == "error" and record is None:
-            job_error = words.plain_error(job.error)
+            job_error = words.plain_error(job.error, how=error_how(job.error))
             out.update(state="error", error=job_error, severity=words.BAD)
             out["heading"] = (
                 "The change was not sent. " + job_error["message"] if job_error.get("sent") is False
@@ -652,9 +675,11 @@ def create_app(
             order = [s.name for s in service.list_scales()]  # which scales it reached is not recorded
         rows: list[dict[str, Any]] = []
         first_pending_seen = False
+        # How each scale that may be frozen stopped answering, so a failed connect is not called a scale that did not answer.
+        how = service.frozen_how() if any(words.is_left_out(r) or r.may_be_frozen for r in record.scale_results) else {}
         for name in order:
             if name in results:
-                rows.append(words.scale_row(results[name]))
+                rows.append(words.scale_row(results[name], how.get(name)))
             elif finished or stalled:
                 rows.append(words.missing_row(name))
             else:
@@ -665,7 +690,7 @@ def create_app(
         # A scale the review left out because it did not answer. Said at the top as well as on its line.
         left = [r.scale for r in record.scale_results if words.is_left_out(r)]
         out["left_out"] = left
-        out["left_out_text"] = words.left_out_text(left) if left else None
+        out["left_out_text"] = words.left_out_text(left, how) if left else None
         still = tuple(getattr(record, "still_differ", ()) or ())
         notes = (words.leftover_notes(record) or [d.message for d in still]) if finished else []
         if finished and still and not notes:

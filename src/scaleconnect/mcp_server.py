@@ -66,7 +66,7 @@ STATUS_MEANINGS = {
     "wrong_scale": "The serial at that address does not match the config. Nothing was written.",
     "drift_refused": "The scale holds another product, differs and nobody acknowledged it, holds something in the way, holds a record that cannot be sent back, or has a table that does not look as the catalog expects. Nothing was written. See drift and items.",
     "skipped_not_write_enabled": "Writes are off for this scale in the config. Nothing was sent.",
-    "not_available": "Nothing was sent. This change left this scale out because it may be frozen, from the web page or a preview whose scales left it out. Treat it as may be frozen.",
+    "not_available": "Nothing was sent. This change left this scale out because it may be frozen, by the web page, a preview or the apply. Treat it as may be frozen.",
     "not_sent": "An earlier problem on this scale stopped this record. It was not sent.",
 }
 
@@ -173,6 +173,10 @@ _NEXT_STEP_FOR_ERROR = {
     "change_not_found": "Check the id. scale_list_scales shows the last change id for each scale.",
     "item_not_found": "Call scale_search_items to find the item.",
     "config_changed": _RESTART_NEXT_STEP,
+    "scale_may_be_frozen": (
+        "Do not apply it again. Every scale this would reach gave no reply after the preview, so nothing was read or sent. "
+        "Tell the person it may need a reboot. It stays left out until the person has looked at it and asks for a compare that names it."
+    ),
     "reload_differences": "Tell the person. A reload is theirs to run at the command line, and it is not available through this server. It stopped because it would change what the scale last showed, so they must see that list first.",
 }
 
@@ -188,14 +192,15 @@ _NEXT_STEP_FOR_PREVIEW_ERROR = {
     "config_changed": _RESTART_NEXT_STEP,
     "target_changed": "For target_changed, do not call this again. That id now holds another item, so what you were repeating no longer applies, and nothing was changed. Tell the person. Do not delete the item that is there now unless they ask for it by name.",
     "plu_change_not_finished": "For plu_change_not_finished, do not call this again. This scale is still on an old PLU from a PLU change that has not finished, and taking its record would undo that change. Show the person, and if they agree, make a new preview of that edit.",
+    "scale_may_be_frozen": "For scale_may_be_frozen, do not call this again. Every scale it would reach may be frozen, so none was read and nothing was prepared. Tell the person it may need a reboot. It stays left out until the person has looked at it and asks for a compare that names it.",
 }
 # Errors where calling the same tool again with new values cannot help.
-_NO_RETRY_ERRORS = frozenset({"plu_edit_held", "plu_change_not_finished", "config_changed", "target_changed"})
+_NO_RETRY_ERRORS = frozenset({"plu_edit_held", "plu_change_not_finished", "config_changed", "target_changed", "scale_may_be_frozen"})
 
 _FROZEN_NEXT_STEP = (
     "A scale may have frozen. Stop reading and writing that scale, and do not retry, not even a read. Tell the person it may "
-    "need a reboot. Go back to it only after the person says it has been checked. A new preview reads every scale it names, so "
-    "until then leave that scale out with scales."
+    "need a reboot. Previews, applies and reads leave it out until the person has looked at it and asks for a compare that "
+    "names it."
 )
 
 _STATUS_HELP = """Each scale gets one status. may_be_frozen true on a scale result means it gave no reply, whatever its status. Stop reading and writing that scale, tell the person it may need a reboot, and do not retry.
@@ -207,7 +212,7 @@ _STATUS_HELP = """Each scale gets one status. may_be_frozen true on a scale resu
 - unreachable, read_failed, wrong_scale: nothing was written.
 - drift_refused: the scale differs, or holds something in the way. Nothing was written. See drift and next_step. A reload may be the repair, and only a person can run it.
 - skipped_not_write_enabled: writes are off for this scale, so it still has the old value.
-- not_available: nothing sent. A scale left out because it may be frozen, by the web page or by scales, gets it. Each item is not_sent. Treat that scale as may be frozen.
+- not_available: nothing sent. A scale left out because it may be frozen gets it. Each item is not_sent. Treat that scale as may be frozen.
 An item can also be not_sent: an earlier problem on that scale stopped it."""
 
 _OUTCOME_HELP = """outcome is one of:
@@ -227,7 +232,7 @@ _READ_RISK_HELP = """A read can freeze a real scale, and a frozen scale needs a 
 
 SERVER_INSTRUCTIONS = """ScaleConnect changes products on the store's legal for trade label scales. The PLU on the scale should be the same 4 digit number as the item in Square.
 
-A read can freeze a real scale, and a frozen scale needs a person to reboot it. Every preview and apply reads too, unless told not to. So read only when you have a reason, and do not read repeatedly. If a result has may_be_frozen true or a summary says MAY BE FROZEN, stop reading and writing that scale, tell the person it may need a reboot, and do not retry.
+A read can freeze a real scale, and a frozen scale needs a person to reboot it. Every preview and apply reads too, unless told not to. So read only when you have a reason, and do not read repeatedly. If a result has may_be_frozen true or a summary says MAY BE FROZEN, stop reading and writing that scale, tell the person it may need a reboot, and do not retry. Previews, applies and reads leave that scale out until the person has looked at it and asks for a compare that names it.
 
 A change to the scales is not finished until the Square register and the printed labels match. Report three things separately: scales, Square, labels. Say done only when all three are done, or the person has said to skip one. success speaks only for the scales.
 
@@ -396,8 +401,14 @@ def _frozen_line(name: str, how: str | None = None) -> str:
     why = {
         "unreachable": "It could not be reached. That can be the network or a frozen scale, so it still counts.",
         "left_out": "It was left out because it gave no reply earlier, and nothing was sent.",
+        "not_read": "It was left out and not read, because it gave no reply earlier and nothing has read it since.",
     }.get(how or "", "It gave no reply.")
     return f"{name}: MAY BE FROZEN. {why} Stop reading and writing it, and do not retry. It may need a reboot by a person."
+
+
+def _left_out_line(name: str) -> str:
+    """name is a config name, from a preview's left_out."""
+    return f"{name} is left out. It gave no reply earlier, and nothing is read or sent there."
 
 
 def _silent_line(name: str, how: str | None = None) -> str:
@@ -999,15 +1010,20 @@ def _preview_payload(preview: Preview) -> dict[str, Any]:
         ]
         codes = {e.code for e in preview.errors}
         frozen = list(preview.scales) if any(e.may_be_frozen for e in preview.errors) else []
+        # Left out because it may be frozen, and not read. When that refused the preview, it is named as may be frozen too.
+        left = list(preview.left_out)
+        if "scale_may_be_frozen" in codes:
+            frozen += [name for name in left if name not in frozen]
         steps = [] if frozen or codes & _NO_RETRY_ERRORS else ["Fix every error listed, using the message in errors, and call the same tool again."]
-        if frozen:
+        if frozen and "scale_may_be_frozen" not in codes:
             steps.append(_FROZEN_NEXT_STEP)
         steps.extend(text for code, text in _NEXT_STEP_FOR_PREVIEW_ERROR.items() if code in codes)
         next_step = " ".join(steps)
         lines = [
             "REFUSED. Nothing was changed, no scale was written, and there is no preview id.",
             *problems,
-            *[_frozen_line(name) for name in frozen],
+            *[_left_out_line(name) for name in left],
+            *[_frozen_line(name, "not_read" if name in left else None) for name in frozen],
             *[_read_repeat_line(name) for name in preview.scales_read_repeated],
             f"Next: {next_step}",
         ]
@@ -1029,6 +1045,7 @@ def _preview_payload(preview: Preview) -> dict[str, Any]:
     lines = [
         f"Preview only. Nothing has changed. {len(preview.differences)} change(s) for {', '.join(preview.scales)}. Expires {preview.expires_at}.",
     ]
+    lines.extend(_left_out_line(name) for name in preview.left_out)
     lines.extend(
         _describe_difference(d, d.index in finishing and d.action == "edit" and "plu" not in d.fields)
         for d in preview.differences[:_SUMMARY_LIST_LIMIT]
@@ -1068,6 +1085,12 @@ def _preview_payload(preview: Preview) -> dict[str, Any]:
             next_step += f" {_DELETE_MAY_HAVE_LANDED_NEXT_STEP}"
         if any(d.action == "settle_push" and (not d.fields or _SALE_FIELDS & set(d.fields)) for d in preview.differences):
             next_step += f" {_SETTLE_CHANGED_SALE_NEXT_STEP}"
+    if preview.left_out:
+        named = ", ".join(preview.left_out)
+        next_step += (
+            f" {named} may be frozen, so this leaves it out and it misses this change. Tell the person it may need a reboot. "
+            "It stays left out until they have looked at it and ask for a compare that names it."
+        )
     lines.append(f"Next: {next_step}")
     return {
         **payload,
@@ -1490,11 +1513,14 @@ def build_server(service: ScaleConnectService, *, caller: str | None = None) -> 
             refused = unknown_scales(scales)
             if refused is not None:
                 return refused
-            comparisons = service.compare_scales(scales)
+            # With no scales named, a scale that may be frozen is left out and not read. Naming it is the deliberate
+            # check, after a person has looked at it, and only that or a reload clears its flag.
+            comparisons = service.compare_scales(scales, leave_out_frozen=scales is None)
             data = [_comparison_payload(c, max_differences) for c in comparisons]
             not_compared = [c.scale for c in comparisons if c.status != "compared"]
             differing = [c.scale for c in comparisons if c.status == "compared" and c.differences]
             all_match = bool(comparisons) and not not_compared and not differing
+            left = [c.scale for c in comparisons if c.status == "not_contacted" and c.may_be_frozen]
             lines = []
             if all_match:
                 lines.append("Every scale asked about was read, and all match the catalog exactly.")
@@ -1503,12 +1529,14 @@ def build_server(service: ScaleConnectService, *, caller: str | None = None) -> 
             for c in comparisons:
                 if c.status == "compared":
                     lines.append(f"{c.scale}: compared. Read {c.items_read} records, and {len(c.differences)} differ from the catalog.")
+                elif c.scale in left:
+                    lines.append(f"{c.scale}: left out, so it was not read.")
                 else:
                     lines.append(f"{c.scale}: {_word_text(c.status)}, so it was not read. The reason is in its message.")
             if not_compared:
                 lines.append(f"Not compared, so nobody knows what they hold: {', '.join(not_compared)}.")
             frozen = [c.scale for c in comparisons if c.may_be_frozen]
-            lines.extend(_frozen_line(name) for name in frozen)
+            lines.extend(_frozen_line(name, "not_read" if name in left else None) for name in frozen)
             second_try = [c.scale for c in comparisons if c.read_repeated]
             lines.extend(_read_repeat_line(name) for name in second_try)
             lagging = [d for c in comparisons for d in c.differences if d.unfinished_plu_change]
@@ -1554,7 +1582,8 @@ def build_server(service: ScaleConnectService, *, caller: str | None = None) -> 
                     return None
 
             wanted = [from_catalog(kind, value) for kind, value in targets]
-            reads = service.read_scale_items(plus=plus or [], ids=ids or [], scales=scales)
+            # A scale that may be frozen is left out, named or not. Only a compare that names it clears its flag.
+            reads = service.read_scale_items(plus=plus or [], ids=ids or [], scales=scales, avoid_frozen=True)
 
             data = []
             lines = []
@@ -1565,6 +1594,9 @@ def build_server(service: ScaleConnectService, *, caller: str | None = None) -> 
                     rows = [_read_row(read, kind, value, item) for (kind, value), item in zip(targets, wanted)]
                     lines.append(f"{read.scale}: read at {_read_time_text(read.read_at)}.")
                     lines.extend(f"{read.scale}: {_describe_read_row(row, kind)}" for row, (kind, _) in zip(rows, targets))
+                elif read.status == "not_contacted" and read.may_be_frozen:
+                    lines.append(f"{read.scale}: left out, so it was NOT READ, and nobody knows what it holds.")
+                    lines.append(_frozen_line(read.scale, "not_read"))
                 else:
                     lines.append(f"{read.scale}: NOT READ ({_word_text(read.status)}), so nobody knows what it holds. The reason is in its message.")
                     if read.may_be_frozen:
@@ -1617,6 +1649,7 @@ def build_server(service: ScaleConnectService, *, caller: str | None = None) -> 
                 requested_by=who(ctx),
                 scales=scales,
                 read_scales=read_scales,
+                leave_out_frozen=True,  # named or not, a scale that may be frozen is left out, with a warning to acknowledge
             )
             return _reply(_preview_payload(preview), is_error=not preview.ok)
 
@@ -1636,6 +1669,7 @@ def build_server(service: ScaleConnectService, *, caller: str | None = None) -> 
                 acknowledge_warnings,
                 acknowledge_drift=acknowledge_drift or (),
                 requested_by=who(ctx),
+                leave_out_frozen=True,  # checked again under the apply lock, so a scale flagged since the preview is not contacted
             )
             return _reply(_change_payload(record, service.settle_ended_a_miss(record)), is_error=_apply_had_a_problem(record))
 
@@ -1664,7 +1698,7 @@ def build_server(service: ScaleConnectService, *, caller: str | None = None) -> 
         id: Annotated[StrictInt | None, Field(description="Which item, by its id in the catalog. Give this or plu, not both.")] = None,
     ) -> CallToolResult:
         def call() -> CallToolResult:
-            preview = service.preview_settle_drift(scale=scale, take=take, plu=plu, id=id, requested_by=who(ctx))
+            preview = service.preview_settle_drift(scale=scale, take=take, plu=plu, id=id, requested_by=who(ctx), avoid_frozen=True)
             return _reply(_preview_payload(preview), is_error=not preview.ok)
 
         return run(call)
@@ -1684,11 +1718,12 @@ def build_server(service: ScaleConnectService, *, caller: str | None = None) -> 
                 "The catalog lists this id, so it is not an orphan.",
                 "If the scale holds something else there, that is drift. Use scale_preview_settle_drift.",
             )
-        read = service.read_scale_items(ids=[item_id], scales=[scale])[0]
+        read = service.read_scale_items(ids=[item_id], scales=[scale], avoid_frozen=True)[0]
         if read.may_be_frozen:
+            how = "not_read" if read.status == "not_contacted" else None
             return None, _refused(
                 "scale_not_read",
-                f"{_frozen_line(scale)} So nobody knows what it holds.",
+                f"{_frozen_line(scale, how)} So nobody knows what it holds.",
                 _FROZEN_NEXT_STEP,
                 scales_may_be_frozen=[scale],
             )
@@ -1758,11 +1793,11 @@ def build_server(service: ScaleConnectService, *, caller: str | None = None) -> 
                     "The token does not match what this scale holds now, so the record was not marked.",
                     "Call scale_preview_mark_orphan again, and show the person what it holds now.",
                 )
-            marks = service.mark_orphans_from_read(scale, ids=[id], note=note, requested_by=who(ctx))
+            marks = service.mark_orphans_from_read(scale, ids=[id], note=note, requested_by=who(ctx), avoid_frozen=True)
             if marks.may_be_frozen:
                 return _refused(
                     "not_marked",
-                    f"{_frozen_line(scale)} So nothing was marked.",
+                    f"{_frozen_line(scale, 'not_read' if marks.status == 'not_contacted' else None)} So nothing was marked.",
                     _FROZEN_NEXT_STEP,
                     scales_may_be_frozen=[scale],
                 )
@@ -1847,7 +1882,9 @@ Use it after a result of unknown, mismatch or catalog_out_of_sync, before resolv
 
 {_READ_RISK_HELP}
 
-Each scale's status is compared, not_contacted (the config allows no contact), wrong_scale, unreachable or read_failed. Only compared means it was read. all_match is true only if every scale asked about was read and has no differences. Each difference has a kind: differs, different_product, missing, or not_in_catalog. differences_total is the real count, even if the list is cut by max_differences. A placeholder record is an empty slot, so it is not a difference. To end a difference on an item the catalog lists, use scale_preview_settle_drift, unless the summary says a PLU change has not finished there. Then a new preview of that same edit finishes it, and a settle cannot. For not_in_catalog, use scale_preview_mark_orphan if it blocks an add. It can also be a deleted item that scale has not taken yet, and a new preview of that same delete reaches it.
+With scales left out, a scale that may be frozen is left out and not read: not_contacted with may_be_frozen true. Name it in scales only after the person has looked at it and asks for that compare. Only that, or a reload, clears its flag.
+
+Each scale's status is compared, not_contacted (the config allows no contact, or left out as above), wrong_scale, unreachable or read_failed. Only compared means it was read. all_match is true only if every scale asked about was read and has no differences. Each difference has a kind: differs, different_product, missing, or not_in_catalog. differences_total is the real count, even if the list is cut by max_differences. A placeholder record is an empty slot, so it is not a difference. To end a difference on an item the catalog lists, use scale_preview_settle_drift, unless the summary says a PLU change has not finished there. Then a new preview of that same edit finishes it, and a settle cannot. For not_in_catalog, use scale_preview_mark_orphan if it blocks an add. It can also be a deleted item that scale has not taken yet, and a new preview of that same delete reaches it.
 
 {_RELOAD_HELP}
 
@@ -1864,6 +1901,8 @@ Use it to check one item on the scales, such as after a result of unknown, or wh
 
 {_READ_RISK_HELP}
 
+A scale that may be frozen is left out and not read, named or not: not_contacted with may_be_frozen true.
+
 For each scale, was_read says if it was read. If it is false, nobody knows what that scale holds, which is not the same as holding nothing. If it is true, each result has found and records. A placeholder record is an empty slot, so it shows as holding nothing. A PLU can show on more than one id. matches_catalog compares all 20 fields as exact text. plu_change_not_finished means the record is still on the old PLU, and next_step says what finishes it. The summary gives ids, PLUs, prices and whether they match. Descriptions are only in records.
 
 {_DATA_HELP}""",
@@ -1875,7 +1914,7 @@ For each scale, was_read says if it was read. If it is false, nobody knows what 
         annotations=_READS_A_SCALE,
         description=f"""Check a list of adds, edits and deletes, and show what would change. Nothing changes on any scale or in the catalog. This is the required first step: scale_apply_changes takes only a preview id from here.
 
-{_READ_RISK_HELP} If scales_may_be_frozen is not empty, do not apply the preview. With read_scales on (the default) it reads each enabled scale's whole table: 95 seconds on three scales, about 29 seconds on one. If another change is running you get apply_busy.
+{_READ_RISK_HELP} If scales_may_be_frozen is not empty, do not apply the preview. A scale that may be frozen is left out, named or not, with a scale_left_out warning. With read_scales on (the default) it reads each enabled scale's whole table: 95 seconds on three scales, about 29 seconds on one. If another change is running you get apply_busy.
 
 Put every change in one list. Each change looks like one of these:
 {{"action": "edit", "target_plu": "4001", "price": "12.75"}}
@@ -1890,7 +1929,7 @@ Rules: a price is text with two decimals, never a number. An edit changes only p
 
 A delete overwrites the item's id with a placeholder record, named UNUSED, so the old PLU stops working. It gives delete_placeholder, which needs acknowledge_warnings. To reach a scale that did not take it, make a new preview of that same delete, and use scales to name that scale. Give expected_plu when you target by id. If that id now holds another PLU, it refuses with target_changed.
 
-An edit with plu changes the PLU at the same id, so the old PLU stops working. It gives plu_change, which needs acknowledge_warnings. To finish it on a scale that missed it, make a new preview of that same edit, after the person agrees. plu_change_lagging names a scale read just now as still on the old PLU.
+An edit with plu changes the PLU at the same id, so the old PLU stops working. It gives plu_change, which needs acknowledge_warnings. To finish it on a scale that missed it, make a new preview of that same edit, after the person agrees.
 
 Any bad change refuses the whole preview: ok is false, errors lists every problem, and there is no preview id. Fix them and send the whole list again. For config_changed, do not retry. Ask the person to restart both programs.
 
@@ -1902,7 +1941,7 @@ If ok is true, show the person differences, warnings and drift before applying.
 - gap_filled: placeholders go on the ids between. It needs acknowledge_warnings.
 - drift_not_checked_on lists scales not read. An empty drift list says nothing about those.
 - no_change: the catalog already has these values.
-A preview expires after 15 minutes by default, and goes stale if the catalog changes.
+A preview expires after 15 minutes, or when the catalog changes.
 
 {_DATA_HELP}""",
     )
@@ -1950,7 +1989,7 @@ A settle to the catalog that holds a price, PLU, Code, sold by or tax changes wh
 
 Then, once the person has seen differences, warnings and drift, call scale_apply_changes with the preview_id, acknowledge_drift set to drift_tokens_to_acknowledge (a settle gets a token even for different_product), and acknowledge_warnings true if must_acknowledge_warnings is true. This always names one scale, so it gives a scale_not_targeted warning, and the result is partial rather than success when other scales are configured.
 
-ok false means nothing was prepared. errors says why: no_drift (they already match), settle_read_failed, settle_not_possible, plu_edit_held, plu_change_not_finished, config_changed, duplicate_plu, scale_not_write_enabled, unknown_scale or item_not_found. For an id only the scale holds, use scale_preview_mark_orphan.
+ok false means nothing was prepared. errors says why: no_drift (they already match), settle_read_failed, settle_not_possible, plu_edit_held, plu_change_not_finished, config_changed, duplicate_plu, scale_not_write_enabled, unknown_scale, item_not_found or scale_may_be_frozen (not read, see next_step). For an id only the scale holds, use scale_preview_mark_orphan.
 
 {_DATA_HELP}""",
     )

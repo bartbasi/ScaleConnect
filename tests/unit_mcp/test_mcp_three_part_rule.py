@@ -566,6 +566,10 @@ def test_the_freeze_flag_goes_when_a_verified_result_ends_that_miss(make_env):
     session = Session(env)
     frozen_miss(env, session)
     env.fakes["B"].clear_faults()
+    # Round 9 N1: a settle does not read a flagged scale. The person looks, then asks for a compare that names it.
+    refused = session.data("scale_preview_settle_drift", scale="B", take="catalog", plu="1001")
+    assert refused["ok"] is False and refused["errors"][0]["code"] == "scale_may_be_frozen" and refused["scales_may_be_frozen"] == ["B"]
+    session.data("scale_compare_scales", scales=["B"])
     preview = session.data("scale_preview_settle_drift", scale="B", take="catalog", plu="1001")
     session.apply(preview, acknowledge_warnings=True, acknowledge_drift=preview["drift_tokens_to_acknowledge"])
     data = session.data("scale_list_scales")

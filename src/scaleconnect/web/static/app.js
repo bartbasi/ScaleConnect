@@ -6,6 +6,7 @@
   var S = { signedIn: false, csrf: null, caps: { add: true, edit: true, delete: false, notes: {} }, scales: [],
             descMax: 35, pluEdit: false, busy: false, deleteNote: '', configNotice: null };
   var REBOOT = 'The scale did not answer. It may need a reboot. Tell Bart.';
+  var NO_CONNECT_WORDS = 'Could not connect to the scale. It may be off the WiFi, or frozen. Tell Bart.';
   var routeToken = 0;
   var timer = null;
   var kick = null;
@@ -312,7 +313,7 @@
     var wrong = (checked || []).filter(function (s) { return s.status !== 'read'; });
     if (!wrong.length) { return null; }
     return wrong.map(function (s) {
-      return box(s.severity === 'warn' ? 'warn' : 'bad', 'Check this', s.may_be_frozen ? REBOOT : s.text, s.may_be_frozen ? s.text : null);
+      return box(s.severity === 'warn' ? 'warn' : 'bad', 'Check this', s.may_be_frozen ? (s.reboot || REBOOT) : s.text, s.may_be_frozen ? s.text : null);
     });
   }
 
@@ -589,7 +590,7 @@
       if (!pv) { holder.appendChild(h('p', { class: 'plain dots', text: 'Getting ready' })); return; }
       if (!pv.ok) {
         holder.appendChild(box('bad', 'Problem', 'This cannot be sent yet.'));
-        pv.errors.forEach(function (e) { holder.appendChild(box('bad', null, e.may_be_frozen ? REBOOT : e.message, e.may_be_frozen ? e.message : null)); });
+        pv.errors.forEach(function (e) { holder.appendChild(box('bad', null, e.may_be_frozen ? (e.reboot || REBOOT) : e.message, e.may_be_frozen ? e.message : null)); });
         var frozenRefusal = pv.errors.some(function (e) { return e.code === 'scale_may_be_frozen'; });
         if (draft.repeat && !frozenRefusal) { holder.appendChild(box('warn', null, 'This repeat is out of date.', 'The work may already be finished, or the item may have changed. Nothing was sent.')); }
         if (pv.repeat) {
@@ -605,7 +606,7 @@
       var leftOut = pv.left_out || [];
       /* A scale that did not answer earlier is left out. Said first, before anything else on the review. */
       if (leftOut.length) {
-        holder.appendChild(box('bad', 'Left out', pv.left_out_text || (leftOut.join(', ') + ' is left out. It did not answer last time. Tell Bart.'),
+        holder.appendChild(box('bad', 'Left out', pv.left_out_text || ('Left out: ' + leftOut.join(', ') + '. Tell Bart.'),
           'This change goes to the other scales only.'));
       }
       /* A repeat is about one item, named by its PLU. If the review shows another item, nothing may be sent. */
@@ -643,7 +644,7 @@
         }
         if (wn.code === 'scale_left_out') {
           /* The box at the top already says it. Only the tick is here. */
-          if (wn.requires_ack) { tick('ack' + i, key, 'I understand. ' + leftOut.join(', ') + ' will not get this change.'); }
+          if (wn.requires_ack) { tick('ack' + i, key, 'I understand. ' + (leftOut.length > 1 ? leftOut.slice(0, -1).join(', ') + ' and ' + leftOut[leftOut.length - 1] : leftOut[0]) + ' will not get this change.'); }
           return;
         }
         if (wn.code === 'gap_filled') {
@@ -651,7 +652,7 @@
           if (wn.requires_ack) { tick('ack' + i, key, 'I understand. Empty slots will be added so there is no gap.'); }
           return;
         }
-        if (wn.may_be_frozen) { frozenSeen = true; holder.appendChild(box('bad', 'Check this', REBOOT, wn.message)); }
+        if (wn.may_be_frozen) { frozenSeen = true; holder.appendChild(box('bad', 'Check this', wn.reboot || REBOOT, wn.message)); }
         else { holder.appendChild(box(wn.requires_ack ? 'warn' : 'working', wn.requires_ack ? 'Read this' : 'Note', wn.message)); }
         if (wn.requires_ack) { tick('ack' + i, key, 'I have read this. Send it anyway.'); }
       });
@@ -674,7 +675,7 @@
         var named = pv.warnings.filter(function (w) { return (w.scales_named || []).indexOf(name) >= 0; });
         if (checking) { line = 'Checking'; cls = 'working'; }
         else if (mine.length) { line = 'Different from our list'; cls = 'bad'; }
-        else if (named.some(function (w) { return w.may_be_frozen; })) { line = 'Did not answer. Do not send. Tell Bart.'; cls = 'bad'; }
+        else if (named.some(function (w) { return w.may_be_frozen; })) { line = named.some(function (w) { return w.may_be_frozen && w.reboot !== NO_CONNECT_WORDS; }) ? 'Did not answer. Do not send. Tell Bart.' : 'Could not connect. Do not send. Tell Bart.'; cls = 'bad'; }
         else if (named.length) { line = 'Read the note above.'; cls = 'warn'; }
         else if (read && rep && rep.kind === 'plu_change') { line = 'Checked. The repeat is sent to this scale.'; cls = 'ok'; }
         else if (read) { line = 'Checked. Nothing is different.'; cls = 'ok'; }
@@ -682,7 +683,7 @@
         holder.appendChild(box(cls, name, line));
       });
       leftOut.forEach(function (name) {
-        holder.appendChild(box('bad', name, 'Left out. It did not answer last time. Nothing is read or sent to it. Tell Bart.'));
+        holder.appendChild(box('bad', name, (pv.left_out_rows || {})[name] || 'Left out. Nothing is read or sent to it. Tell Bart.'));
       });
       pv.drift.forEach(function (dr, i) {
         var plain = dr.plain || null;   /* staff words from the server for a drift nobody may override */
@@ -702,7 +703,7 @@
       if (frozenSeen) {
         /* Sending reads that scale again, which can freeze it for good. Nothing goes out until a person has looked. */
         blocked = true;
-        holder.appendChild(box('bad', 'Do not send', 'A scale did not answer, and sending would read it again.',
+        holder.appendChild(box('bad', 'Do not send', 'A scale did not answer, or could not connect, and sending would try it again.',
           'Tell Bart. Do not try again and again. To send to the other scales only, go back and review it again. That scale will be left out.'));
       }
       if (checkError) {
@@ -836,7 +837,7 @@
           h('div', { class: 'line', text: r.text }));
         if (r.now) { b.appendChild(h('div', { class: 'more', text: r.now })); }
         if (r.message && r.state === 'done') { b.appendChild(h('div', { class: 'more', text: r.message })); }
-        if (r.may_be_frozen) { b.appendChild(h('div', { class: 'reboot', text: REBOOT })); }
+        if (r.may_be_frozen) { b.appendChild(h('div', { class: 'reboot', text: r.reboot || REBOOT })); }
         holder.appendChild(b);
       });
       if (d.state === 'running') {

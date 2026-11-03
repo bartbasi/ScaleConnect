@@ -445,7 +445,7 @@ def test_a_scale_that_did_not_answer_blocks_the_send_and_says_so_on_its_line(mak
     assert sick["may_be_frozen"] is True and sick["scales_named"] == ["A"]
     review = SCRIPT.split("function renderReview")[1].split("function renderResult")[0]
     assert "frozenSeen" in review and "Did not answer. Do not send. Tell Bart." in review
-    assert "A scale did not answer, and sending would read it again." in review
+    assert "A scale did not answer, or could not connect, and sending would try it again." in review
     assert "blocked = true;" in review.split("if (frozenSeen) {")[1].split("}")[0]
     web.env.fakes["A"].reboot()
 

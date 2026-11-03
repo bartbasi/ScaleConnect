@@ -165,7 +165,8 @@ def _run(args: argparse.Namespace) -> int:
             _emit(service.get_item(plu=args.plu, id=args.id).to_dict())
         elif args.command == "preview":
             preview = service.preview_changes(
-                _read_changes(args), requested_by=args.who or _default_who(), scales=args.scale, read_scales=args.read
+                _read_changes(args), requested_by=args.who or _default_who(), scales=args.scale, read_scales=args.read,
+                leave_out_frozen=True,  # a scale that may be frozen is left out, named or not
             )
             _emit(preview.to_dict())
             return EXIT_OK if preview.ok else EXIT_VALIDATION
@@ -175,6 +176,7 @@ def _run(args: argparse.Namespace) -> int:
                 args.acknowledge_warnings,
                 acknowledge_drift=args.acknowledge_drift,
                 requested_by=args.who or _default_who(),
+                leave_out_frozen=True,  # checked again under the apply lock
             )
             _emit(record.to_dict())
             return EXIT_OK if record.success else EXIT_NOT_SUCCESS
@@ -183,23 +185,26 @@ def _run(args: argparse.Namespace) -> int:
         elif args.command == "changes":
             _emit([record.to_dict() for record in service.list_changes(limit=args.limit)])
         elif args.command == "compare":
-            results = service.compare_scales(args.scale)
+            # With no scale named, one that may be frozen is left out. Naming it is the deliberate check that clears it.
+            results = service.compare_scales(args.scale, leave_out_frozen=args.scale is None)
             _emit([result.to_dict() for result in results])
-            clean = all(r.status == "compared" and not r.differences for r in results if r.status != "not_contacted")
+            clean = all(r.status == "compared" and not r.differences for r in results if r.status != "not_contacted" or r.may_be_frozen)
             return EXIT_OK if clean else EXIT_NOT_SUCCESS
         elif args.command == "read":
-            results = service.read_scale_items(plus=args.plu, ids=args.id, scales=args.scale)
+            results = service.read_scale_items(plus=args.plu, ids=args.id, scales=args.scale, avoid_frozen=True)
             _emit([result.to_dict() for result in results])
-            clean = all(r.status == "read" for r in results if r.status != "not_contacted")
+            clean = all(r.status == "read" for r in results if r.status != "not_contacted" or r.may_be_frozen)
             return EXIT_OK if clean else EXIT_NOT_SUCCESS
         elif args.command == "settle":
             preview = service.preview_settle_drift(
-                scale=args.scale, take=args.take, plu=args.plu, id=args.id, requested_by=args.who or _default_who()
+                scale=args.scale, take=args.take, plu=args.plu, id=args.id, requested_by=args.who or _default_who(), avoid_frozen=True
             )
             _emit(preview.to_dict())
             return EXIT_OK if preview.ok else EXIT_VALIDATION
         elif args.command == "mark-orphans":
-            marks = service.mark_orphans_from_read(args.scale, ids=args.id, note=args.note, requested_by=args.who or _default_who())
+            marks = service.mark_orphans_from_read(
+                args.scale, ids=args.id, note=args.note, requested_by=args.who or _default_who(), avoid_frozen=True
+            )
             _emit(marks.to_dict())
             return EXIT_OK if marks.status == "read" else EXIT_NOT_SUCCESS
         elif args.command == "orphans":
