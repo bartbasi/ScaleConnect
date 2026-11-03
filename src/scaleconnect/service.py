@@ -120,6 +120,10 @@ _FIELD_WORDS = {"field6": "field 6", "fields_7_12": "sold by, tax and other sett
 
 # What a change ended as on a scale, for what is unfinished. Something went out, so the scale may hold anything:
 _MISSED_LANDED = frozenset({ScaleStatus.VERIFIED.value, ScaleStatus.ACCEPTED_NOT_VERIFIED.value})
+# Results where something reached the scale, so its record may have changed. Only these end a row from a last read.
+_REACHED_THE_SCALE = frozenset({
+    ScaleStatus.VERIFIED.value, ScaleStatus.ACCEPTED_NOT_VERIFIED.value, ScaleStatus.UNKNOWN.value, ScaleStatus.MISMATCH.value,
+})
 _MISSED_UNSETTLED = frozenset({ScaleStatus.UNKNOWN.value, ScaleStatus.MISMATCH.value})
 _MISSED_MAY_HOLD = frozenset({ScaleStatus.ACCEPTED_NOT_VERIFIED.value}) | _MISSED_UNSETTLED
 # Nothing went out, so the scale is behind only if the catalog took the change. Writes off for a scale
@@ -155,9 +159,30 @@ def _parsed_time(text: Any) -> datetime | None:
         return None
 
 
+def _strictly_before(first: Any, second: Any) -> bool:
+    """first is a time before second. A time that cannot be read, or one with no offset beside one with, is not."""
+    a, b = _parsed_time(first), _parsed_time(second)
+    try:
+        return a is not None and b is not None and a < b
+    except TypeError:
+        return False
+
+
 def _frozen_skip_words(name: str) -> str:
     """Starts with the scale's name, which is how a reader picks the scale out. Library words, no record text."""
     return f"{name}: it gave no reply earlier, and nothing has read it since, so it was not read now. Nothing was sent to it."
+
+
+NAME_IT_ALONE = "To read it, name only this scale, after a person has looked at it."
+
+
+def compare_leaves_out_frozen(scales: Sequence[str] | None) -> bool:
+    """For the MCP server and the command line: a compare reads a scale that may be frozen only when it is
+    the only scale named. With no scales, or with more than one, it is left out, so listing every scale to
+    be thorough cannot read it. Naming it alone is the deliberate check, after a person has looked at it."""
+    if scales is None or isinstance(scales, (str, bytes)):
+        return True
+    return len(set(scales)) != 1
 
 
 def _note_repeat(read: Any, name: str, repeats: set[str] | None) -> None:
@@ -302,6 +327,11 @@ class ScaleConnectService:
         # No replies the log could not take: scale to (what read, at, status). See _note_no_reply.
         self._unnoted: dict[str, tuple[str, str, str | None]] = {}
         self._unnoted_lock = threading.Lock()
+        # Held note files this process has dealt with: logged, or its scale answered since. Only a file that could
+        # not be removed stays in this set and on disk. Such a file no longer counts, here. See _write_unnoted.
+        self._held_done: set[str] = set()
+        # Held note files already named in the server log, so a bad or stuck file is logged once per process.
+        self._held_told: set[str] = set()
 
     @classmethod
     def open(cls, config_path: str | os.PathLike[str] | None = None) -> "ScaleConnectService":
@@ -593,7 +623,7 @@ class ScaleConnectService:
         gets a scale_left_out warning, is named in left_out, and stays on the unfinished list as missing
         this change once it is applied. If no scale with writes on is left, it refuses with scale_may_be_frozen.
         leave_out_frozen does the same for the MCP server and the command line, whether scales names the
-        scale or not. Only a compare that names that scale, or a reload, clears the flag.
+        scale or not. Only a compare that names that scale alone, or a reload, clears the flag.
         """
         now = self._clock()
         created_at = now.isoformat(timespec="seconds")
@@ -2338,7 +2368,8 @@ class ScaleConnectService:
 
         leave_out_frozen leaves out, under the apply lock, any scale that may be frozen: it comes back
         not_contacted with may_be_frozen true, and is not read. The MCP server and the command line ask
-        for it when no scale is named, so only a compare that names that scale can clear its flag.
+        for it unless exactly one scale is named, see compare_leaves_out_frozen, so only a compare that
+        names that scale alone can clear its flag.
         """
         chosen = self._named_scales(scales)
         out: list[ScaleComparison] = []
@@ -2347,7 +2378,8 @@ class ScaleConnectService:
             frozen = set(self.scales_may_be_frozen()) if leave_out_frozen else set()
             for scale in chosen:
                 if scale.name in frozen and (scale.write_enabled is True or scale.read_enabled is True):
-                    out.append(ScaleComparison(scale.name, "not_contacted", _frozen_skip_words(scale.name), may_be_frozen=True))
+                    words = _frozen_skip_words(scale.name) + (f" {NAME_IT_ALONE}" if scales is not None else "")
+                    out.append(ScaleComparison(scale.name, "not_contacted", words, may_be_frozen=True))
                     continue
                 out.append(self._compare_one(scale))
         return out
@@ -2795,6 +2827,10 @@ class ScaleConnectService:
             out.extend(self._records_that_differ(names, {(u.scale, u.item_id) for u in out}))
         except Exception as exc:
             failed = exc.__class__.__name__
+        try:
+            out.extend(self._behind_a_settle(names, {(u.scale, u.item_id) for u in out}))
+        except Exception as exc:
+            failed = exc.__class__.__name__
         # One row of a scale that gave no reply is enough. Going back for another row reads that same scale.
         stuck = {u.scale for u in out if (u.scale, u.item_id) in frozen}
         how: dict[str, str] = {}
@@ -2905,6 +2941,58 @@ class ScaleConnectService:
             )
             repeat = {"tool": "scale_preview_settle_drift", "scale": scale, "take": "catalog", "plu": item.plu}
             out.append(UnfinishedWork(scale, "missed_change", item_id, item.plu, (), repeat, words, row["status"], row["change_id"], differs_in=differs, at=row["at"]))
+        return out
+
+    def _behind_a_settle(self, names: Sequence[str], listed: set[tuple[str, int]]) -> list[UnfinishedWork]:
+        """Scales a settle that took another scale's record may have left behind. Round 6 N8.
+
+        That settle names one scale and moves the catalog, so nothing goes to the others. A scale with no
+        record stored for the item has no state row to compare, so only its last read can say it differs.
+        A row is listed when the scale has writes on, its last read shows a real record that differs from
+        the catalog in more than the time, and it has no result for the item at or after that settle. A
+        scale never read says nothing here. A read that shows the catalog's record, or a later change or
+        settle that reaches the scale, ends it. Plain drift with no such settle stays out, as before.
+        """
+        taken: dict[int, dict[str, Any]] = {}
+        for row in self._catalog.settles_that_took_a_scale():
+            taken[row["item_id"]] = row  # oldest first, so the newest settle of each item is kept
+        if not taken:
+            return []
+        writes_on = {s.name for s in self._current_scales() if s.write_enabled is True}
+        items = {i.id: i for i in self._catalog.list_items()}
+        out: list[UnfinishedWork] = []
+        for item_id, settle in sorted(taken.items()):
+            item = items.get(item_id)
+            if item is None:
+                continue
+            reads = self._catalog.last_reads(item_id)
+            states = self._catalog.scale_states(item_id)
+            for scale in names:
+                if scale == settle["scale"] or scale not in writes_on or (scale, item_id) in listed:
+                    continue
+                state = states.get(scale)
+                if state is not None and state.get("status") in _REACHED_THE_SCALE and not _strictly_before(state.get("at"), settle["at"]):
+                    continue  # a result that reached the scale at or after the settle, or with a time that cannot be read, decides instead
+                # A result that sent nothing, such as a failed read or a scale left out, does not end the row. Round 11 L1.
+                read = reads.get(scale)
+                if read is None or read["record"] is None or is_placeholder(read["record"]):
+                    continue
+                differs = tuple(name for name in _field_differences(item, read["record"]) if name != "timestamp")
+                if not differs:
+                    continue
+                plu_words = f"PLU {item.plu}" if _PLU.fullmatch(item.plu) else "the item"
+                fields = ", ".join(_FIELD_WORDS.get(name, name) for name in differs)
+                other = settle["scale"] if settle["scale"] in names else "another scale"
+                words = (
+                    f"{scale} may differ from the catalog for {plu_words} at id {item_id}, in {fields}. A settle took {other}'s record into the "
+                    f"catalog, and nothing was sent to {scale}. Its last read shows another record. "
+                    "Settle this scale to the catalog to end it. A read also shows if it already matches."
+                )
+                repeat = {"tool": "scale_preview_settle_drift", "scale": scale, "take": "catalog", "plu": item.plu}
+                out.append(UnfinishedWork(
+                    scale, "missed_change", item_id, item.plu, (), repeat, words, ITEM_NOT_SENT, settle["change_id"] or "",
+                    differs_in=differs, at=settle["at"] or "", from_last_read=True,
+                ))
         return out
 
     @staticmethod
@@ -3056,28 +3144,60 @@ class ScaleConnectService:
         return Path(self._settings.state_dir) / "held_no_replies"
 
     def _hold_in_file(self, name: str, what: str, at: str, status: str | None) -> bool:
-        """One file per note, written whole and then renamed, so no reader sees half of one. Never raises."""
+        """One file per note, written whole, flushed to disk and then renamed, so no reader sees half of one.
+        The scale's name starts the file name, so even a file that is damaged later still counts against
+        that scale. Config names are letters, digits, _ and -, so they are safe in a file name. Never raises."""
+        temp: Path | None = None
         try:
             folder = self._held_dir()
-            folder.mkdir(parents=True, exist_ok=True)
-            final = folder / f"{uuid.uuid4().hex}.json"
+            folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+            final = folder / f"{name}.{uuid.uuid4().hex}.json"
             temp = folder / f"{final.stem}.tmp"
-            temp.write_text(json.dumps({"scale": name, "what": what, "at": at, "status": status}), encoding="utf-8")
+            with open(temp, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps({"scale": name, "what": what, "at": at, "status": status}))
+                handle.flush()
+                os.fsync(handle.fileno())
             os.replace(temp, final)
         except Exception:
+            if temp is not None:
+                try:
+                    temp.unlink()
+                except FileNotFoundError:
+                    pass
+                except Exception:
+                    self._tell_held_once(temp, "A part written held no reply note could not be removed from the state folder: %s")
             return False
         # The newest note per scale is enough, so the folder does not grow. Notes run under the apply lock, so no
         # other note is being made now. Another process may be logging an older one: it then finds it gone, which is harmless.
         for path, scale, _, _, _ in self._held_files():
             if scale == name and path != final:
-                try:
-                    path.unlink()
-                except Exception:
-                    pass
+                self._remove_held(path)
+        return True
+
+    def _tell_held_once(self, path: Path, words: str) -> None:
+        """Log a problem with a held file once per process, not on every look at the flags."""
+        key = f"{path}\n{words}"  # one line per file and problem, so a later, different problem is still told. Round 11 L2.
+        if key not in self._held_told:
+            self._held_told.add(key)
+            log.error(words, path)
+
+    def _remove_held(self, path: Path) -> bool:
+        """Remove a held file. True if it is gone. A file that cannot be removed is logged with its path."""
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return True
+        except Exception:
+            self._tell_held_once(path, "A held no reply note could not be removed from the state folder: %s. Remove it by hand.")
+            return False
         return True
 
     def _held_files(self) -> list[tuple[Path, str, str, str, str | None]]:
-        """Notes held in the state folder, by any process: (file, scale, what, at, status), oldest first."""
+        """Notes held in the state folder, by any process: (file, scale, what, at, status), oldest first.
+
+        A file named for its scale that cannot be read still counts against that scale, as a damaged row in
+        the log does. Its time is the file's own, and what read and how are unknown. A damaged file from
+        before the name held the scale names no scale, so it is logged and left out."""
         try:
             paths = list(self._held_dir().glob("*.json"))
         except Exception:
@@ -3085,15 +3205,27 @@ class ScaleConnectService:
         names = {s.name for s in self._config.scales}
         out = []
         for path in paths:
+            named = path.name.split(".")[0] if path.name.count(".") == 2 else None
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 scale, what, at, status = data["scale"], data["what"], data["at"], data.get("status")
+                if not (isinstance(scale, str) and isinstance(what, str) and isinstance(at, str)):
+                    raise ValueError("not a held note")
             except FileNotFoundError:
                 continue  # another process wrote it to the log a moment ago
             except Exception:
-                log.error("A held no reply note in the state folder could not be read: %s", path.name)
-                continue
-            if scale in names and isinstance(what, str) and isinstance(at, str):
+                if named is None or named not in names:
+                    self._tell_held_once(path, "A held no reply note in the state folder could not be read, and names no scale: %s")
+                    continue
+                try:
+                    stamp = datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat(timespec="seconds")
+                except FileNotFoundError:
+                    continue
+                except Exception:
+                    stamp = self._now_text()
+                self._tell_held_once(path, "A held no reply note in the state folder could not be read. It still counts against its scale: %s")
+                scale, what, at, status = named, "unknown", stamp, None
+            if scale in names:
                 out.append((path, scale, what, at, status if isinstance(status, str) else None))
         out.sort(key=lambda note: note[3])
         return out
@@ -3101,28 +3233,32 @@ class ScaleConnectService:
     def _forget_unnoted(self, name: str) -> None:
         """A read of this scale answered, under the apply lock, so any note still held for it, here or in the
         state folder, is old news. Every read and every note runs under that lock, so each note held was made
-        before this read."""
+        before this read. A file that cannot be removed is logged, and _write_unnoted no longer counts it."""
         with self._unnoted_lock:
             self._unnoted.pop(name, None)
         for path, scale, _, _, _ in self._held_files():
-            if scale == name:
-                try:
-                    path.unlink()
-                except Exception:
-                    pass
+            if scale == name and not self._remove_held(path):
+                self._held_done.add(str(path))
 
     def _write_unnoted(self) -> dict[str, str]:
         """Try again to log each no reply the log could not take. Returns those still held, scale to how.
-        A note whose scale has answered a read since, by a time that can be trusted, is dropped."""
+        A note whose scale has answered a read since, by a time that can be trusted, is dropped.
+
+        A file whose note went to the log, or whose scale has answered since, no longer counts, even if it
+        cannot be removed. The log then holds the flag, and a read that answers ends it as usual. So a file
+        that cannot be removed does not keep its scale flagged for good, and its note is logged once here."""
         for path, name, what, at, status in self._held_files():
+            if str(path) in self._held_done:
+                self._remove_held(path)  # dealt with already. Only the removal is tried again
+                continue
             try:
                 if not self._read_of_scale_since(name, at):
                     self._catalog.note_read_no_reply(name, what, at, status)
-                path.unlink()
-            except FileNotFoundError:
-                pass  # another process took it first. A second copy in the log flags the same scale, which is harmless
             except Exception:
-                continue
+                continue  # the log still refuses, so the file goes on counting
+            self._held_done.add(str(path))
+            if self._remove_held(path):
+                self._held_done.discard(str(path))
             with self._unnoted_lock:
                 if self._unnoted.get(name) == (what, at, status):
                     self._unnoted.pop(name, None)
@@ -3139,7 +3275,9 @@ class ScaleConnectService:
                     self._unnoted.pop(name, None)
         with self._unnoted_lock:
             out = {name: no_reply_how(status) for name, (_, _, status) in self._unnoted.items()}
-        for _, name, _, _, status in self._held_files():
+        for path, name, _, at, status in self._held_files():
+            if str(path) in self._held_done or self._read_of_scale_since(name, at):
+                continue  # in the log now, or its scale answered since
             out[name] = no_reply_how(status)  # oldest first, so the newest held note decides
         return out
 

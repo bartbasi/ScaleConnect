@@ -12,7 +12,7 @@ import sys
 from typing import Any, Sequence
 
 from .errors import ScaleConnectError, ValidationFailed
-from .service import ScaleConnectService
+from .service import ScaleConnectService, compare_leaves_out_frozen
 
 EXIT_OK = 0
 EXIT_UNEXPECTED = 1
@@ -185,8 +185,8 @@ def _run(args: argparse.Namespace) -> int:
         elif args.command == "changes":
             _emit([record.to_dict() for record in service.list_changes(limit=args.limit)])
         elif args.command == "compare":
-            # With no scale named, one that may be frozen is left out. Naming it is the deliberate check that clears it.
-            results = service.compare_scales(args.scale, leave_out_frozen=args.scale is None)
+            # Unless it is the only scale named, one that may be frozen is left out. Naming it alone is the deliberate check that clears it.
+            results = service.compare_scales(args.scale, leave_out_frozen=compare_leaves_out_frozen(args.scale))
             _emit([result.to_dict() for result in results])
             clean = all(r.status == "compared" and not r.differences for r in results if r.status != "not_contacted" or r.may_be_frozen)
             return EXIT_OK if clean else EXIT_NOT_SUCCESS

@@ -10,7 +10,7 @@ import logging
 import re
 from dataclasses import replace
 from datetime import datetime
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -403,7 +403,10 @@ def create_app(
                 read_since = read_after(row["last_read_at"], miss.at)
                 said = words.missed_settle_words(miss, read_since, row["differs"])
                 row["missed"] = said
-                if said["kind"] != "fixable":
+                if said["kind"] == "other_product":
+                    # Settling refuses a PLU change, and an edit from the page meets the same other product. No button can help.
+                    row.update(flag="different_product", can_fix=False, text=said["stop_text"])
+                elif said["kind"] != "fixable":
                     row.update(flag="unsure", can_fix=False, text=said["stop_text"])
                 else:
                     if row["flag"] in ("none", "same", "unsure") or not read_since:
@@ -527,13 +530,32 @@ def create_app(
                     break
         return remember(result, data, settle=True)
 
+    def other_product_rows(work: list[Any]) -> set[tuple[str, int]]:
+        """Missed changes on a scale whose last read had a different PLU or Code at that id, as (scale, item id).
+        Their card gets no button, since a settle would be refused and an edit would meet the same product.
+        Only for cards that would show a button, so a rolled up card costs nothing here. Reads no scale."""
+        fixable = [u for u in work if u.kind == "missed_change" and words._missed_kind(u) == "fixable"]
+        per_scale = Counter(u.scale for u in fixable)
+        out: set[tuple[str, int]] = set()
+        for u in fixable:
+            if per_scale[u.scale] > words.ROLL_UP_ABOVE:
+                continue
+            try:
+                view = service.get_item(id=u.item_id)
+            except ScaleConnectError:
+                continue
+            state_ = view.scales.get(u.scale)
+            if state_ is not None and words.holds_other_product(state_.last_read, view.item):
+                out.add((u.scale, u.item_id))
+        return out
+
     @app.get("/api/unfinished")
     def unfinished_work():
         """Changes some scale has not confirmed. From the catalog and its log, no scale contact.
         A scale that may be frozen with no row of its own still gets a card, so staff hear it before they try a change."""
         work = service.list_unfinished()
         how = service.frozen_how()  # could not connect, or connected and gave no reply. Both are treated the same.
-        cards = words.unfinished_cards(work, how)
+        cards = words.unfinished_cards(work, how, other_product_rows(work))
         in_rows = {u.scale for u in work if u.may_be_frozen}
         cards.extend(words.frozen_scale_card(name, how.get(name)) for name in frozen_scales(work) if name not in in_rows)
         return {"items": cards}

@@ -107,6 +107,7 @@ Some boxes have no button. That is on purpose.
 
 - **"Did not answer. Tell Bart."** The scale gave no reply, to a change, a check or a review. Do not check it or change it. While this shows, the page sends nothing to that scale, and its boxes have no button. "Check the scales now" still reads the other scales, and leaves that one out. You can still change items. The change goes to the other scales only. See "When a scale is left out" below.
 - **"Our list did not take it."** The change may be on that scale, and our list still has the old value. Check this scale, then call Bart. Putting our list on that scale would put the old value back.
+- **"It had a different product at this number."** When that scale was last read, it held another product where this item should be. This page cannot fix that. Tell Bart.
 - **A count, such as "12 items have not been confirmed".** Many items missed that scale. Tell Bart. One check of that scale clears any that match.
 - **"The list of work not finished could not be built."** Do not take this as all clear. Tell Bart.
 

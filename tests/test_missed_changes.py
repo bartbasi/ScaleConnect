@@ -341,3 +341,115 @@ def _skip_first_read(fake):
         return any(m.kind == "GP" for m in fake.messages)
 
     return match
+
+
+# ---------------------------------------------------------------- round 6 N8: a settle that took another scale's record
+
+
+def settle_b_to_its_own_price(env, price="12.00"):
+    """B was changed by hand. A settle takes B's record into the catalog, and names only B."""
+    held = env.catalog.get_by_plu("1001")
+    env.fakes["B"].preload(row_of(held.replace(price=price)))
+    p = env.svc.preview_settle_drift(scale="B", take="scale", plu="1001")
+    assert p.ok, [e.to_dict() for e in p.errors]
+    rec = env.svc.apply_change(p.preview_id, acknowledge_warnings=True, acknowledge_drift=[d.ack_token for d in p.drift if d.ack_token])
+    assert env.statuses(rec) == {"B": "verified"} and env.catalog.get_by_plu("1001").price == price
+    return rec
+
+
+def test_a_scale_whose_last_read_differs_after_a_settle_elsewhere_is_listed(make):
+    env = make(TWO)
+    env.svc.compare_scales(["A"])  # A matched the catalog at 10.00 then. It has no stored record for the item
+    rec = settle_b_to_its_own_price(env)
+    seen = contacts(env)
+    found = env.svc.list_unfinished()
+    assert contacts(env) == seen, "no scale was contacted"
+    assert [(u.scale, u.kind, u.plu, u.differs_in, u.from_last_read, u.status) for u in found] == [
+        ("A", "missed_change", "1001", ("price",), True, "not_sent")]
+    assert found[0].change_id == rec.change_id and found[0].catalog_took_it is True
+    assert found[0].repeat == {"tool": "scale_preview_settle_drift", "scale": "A", "take": "catalog", "plu": "1001"}
+    assert "A settle took B's record into the catalog, and nothing was sent to A." in found[0].message
+    assert "Test" not in found[0].message, "no description in the words"
+
+
+def test_settling_that_scale_to_the_catalog_ends_it(make):
+    env = make(TWO)
+    env.svc.compare_scales(["A"])
+    settle_b_to_its_own_price(env)
+    work = env.svc.list_unfinished()[0]
+    rec = settle(env, work)
+    assert env.statuses(rec) == {"A": "verified"} and env.fakes["A"].item(1)[4] == "12.00"
+    assert env.svc.list_unfinished() == []
+
+
+def test_a_read_since_that_shows_the_catalogs_record_ends_it(make):
+    env = make(TWO)
+    env.svc.compare_scales(["A"])
+    settle_b_to_its_own_price(env)
+    env.fakes["A"].preload(row_of(env.catalog.get_by_plu("1001")))  # someone put it right by hand
+    env.svc.compare_scales(["A"])
+    assert env.svc.list_unfinished() == []
+
+
+def test_a_scale_never_read_says_nothing(make):
+    env = make(TWO)
+    settle_b_to_its_own_price(env)
+    assert env.svc.list_unfinished() == [], "A was never read, so nothing is known"
+
+
+def test_a_scale_with_writes_off_stays_out_after_a_settle_elsewhere(make):
+    env = make({"A": False, "B": True})
+    env.catalog.record_scale_reads("A", [env.catalog.get_by_plu("1001")], "2026-11-02T09:00:00+00:00")
+    settle_b_to_its_own_price(env)
+    assert env.svc.list_unfinished() == [], "writes off on A is a person's choice"
+
+
+def test_a_later_change_that_reached_the_scale_decides_instead(make):
+    env = make(TWO)
+    env.svc.compare_scales(["A"])
+    settle_b_to_its_own_price(env)
+    p = env.preview([{"action": "edit", "target_plu": "1001", "price": "13.00"}], read_scales=True)
+    tokens = [d.ack_token for d in p.drift if d.ack_token]
+    assert tokens, "A still holds the old price, so this needs a person's acknowledgement"
+    rec = env.svc.apply_change(p.preview_id, acknowledge_drift=tokens)
+    assert env.statuses(rec) == {"A": "verified", "B": "verified"}
+    assert env.svc.list_unfinished() == []
+
+
+def test_a_fix_that_sent_nothing_keeps_the_row(make):
+    """Round 11 L1. The row's own settle fails at its read, so nothing reaches A, and the last read still decides."""
+    env = make(TWO)
+    env.svc.compare_scales(["A"])
+    settle_b_to_its_own_price(env)
+    work = env.svc.list_unfinished()[0]
+    repeat = dict(work.repeat)
+    assert repeat.pop("tool") == "scale_preview_settle_drift"
+    p = env.svc.preview_settle_drift(**repeat)
+    assert p.ok, [e.to_dict() for e in p.errors]
+    env.fakes["A"].raw_reply(JUNK, kind="LP", times=None)
+    rec = env.svc.apply_change(p.preview_id, acknowledge_warnings=True, acknowledge_drift=[d.ack_token for d in p.drift if d.ack_token])
+    env.fakes["A"].clear_faults()
+    assert env.statuses(rec)["A"] not in {"verified", "accepted_not_verified", "unknown", "mismatch"}
+    assert not any(m.kind == "GP" for m in env.fakes["A"].messages), "nothing was written to A"
+    found = env.svc.list_unfinished()
+    assert [(u.scale, u.kind, u.plu) for u in found] == [("A", "missed_change", "1001")], "the miss is still listed"
+
+
+def test_the_page_and_claude_get_their_own_words_for_it(make):
+    from scaleconnect.mcp_server import _unfinished_line
+    from scaleconnect.web import words
+
+    env = make(TWO)
+    env.svc.compare_scales(["A"])
+    settle_b_to_its_own_price(env)
+    work = env.svc.list_unfinished()[0]
+    [card] = words.unfinished_cards([work])
+    assert card["text"] == "A may differ from our list on PLU 1001." and card["button"] == "Fix this on A"
+    assert "Our list was changed to match another scale. Nothing was sent to A" in card["more"]
+    assert "last record sent" not in card["more"]
+    said = words.missed_settle_words(work, False, [])
+    assert said["kind"] == "fixable" and said["status_text"] == "Our list was changed to match another scale. Nothing was sent to A."
+    line = _unfinished_line(work)
+    assert "A settle took another scale's record into the catalog, and nothing was sent to A." in line
+    for text in (card["text"], card["more"], said["status_text"], line, work.message):
+        assert "--" not in text and "\u2014" not in text

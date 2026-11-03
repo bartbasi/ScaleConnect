@@ -716,6 +716,9 @@ class UnfinishedWork:
     may_be_frozen: bool = False  # this scale gave no reply on a logged change, and that miss still stands
     differs_in: tuple[str, ...] = ()  # the last record sent there differs from the catalog in these fields, whatever its status
     at: str = ""  # missed_change only: when that change ended on this scale
+    # missed_change only. True: a settle that took another scale's record moved the catalog, nothing was sent here,
+    # and this scale's last read shows a record that differs in differs_in. change_id and at are that settle's.
+    from_last_read: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -732,6 +735,7 @@ class UnfinishedWork:
             "may_be_frozen": self.may_be_frozen,
             "differs_in": list(self.differs_in),
             "at": self.at,
+            "from_last_read": self.from_last_read,
         }
 
 

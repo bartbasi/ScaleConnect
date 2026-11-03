@@ -921,6 +921,21 @@ class Catalog:
             })
         return out
 
+    def settles_that_took_a_scale(self) -> list[dict]:
+        """Each settle that took one scale's record into the catalog, and landed, oldest first:
+        {"log_id", "change_id", "scale", "item_id", "at"}. The text filter only narrows the search. Each row
+        it finds is parsed, and one that cannot be raises ValueError, as scale_results_in_log does."""
+        out: list[dict] = []
+        for r in self._conn().execute(
+                "SELECT log_id, change_id, payload, at FROM change_log WHERE event = 'scale_result' "
+                "AND payload LIKE '%settle_accept%' ORDER BY log_id"):
+            payload = json.loads(r["payload"])
+            for item in payload.get("items", []):
+                if item.get("action") == "settle_accept" and item.get("status") in _SUCCESS and isinstance(item.get("item_id"), int):
+                    out.append({"log_id": r["log_id"], "change_id": r["change_id"], "scale": payload.get("scale"),
+                                "item_id": item["item_id"], "at": r["at"]})
+        return out
+
     def frozen_scale_results(self, *, detail: bool = False) -> list:
         """(scale, at) for each logged scale result that says the scale gave no reply, oldest first.
         The text filter only narrows the search. Each row is parsed, and one that cannot be is left out.

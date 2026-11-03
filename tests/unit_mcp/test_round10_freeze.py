@@ -127,7 +127,7 @@ def test_reads_and_a_settle_preview_never_read_a_flagged_scale(make_env):
 
 
 def test_the_instructions_say_a_flagged_scale_is_left_out_until_a_compare_names_it():
-    words = "Previews, applies and reads leave that scale out until the person has looked at it and asks for a compare that names it."
+    words = "Previews, applies and reads leave that scale out until the person has looked at it and asks for a compare that names it alone."
     assert words in server_module.SERVER_INSTRUCTIONS[:OLD_CUT]
     assert len(server_module.SERVER_INSTRUCTIONS) <= 4096
     assert "--" not in server_module._FROZEN_NEXT_STEP and "scale_compare_scales" not in server_module._FROZEN_NEXT_STEP

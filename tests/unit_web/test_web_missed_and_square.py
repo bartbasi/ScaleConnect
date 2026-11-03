@@ -387,3 +387,56 @@ def test_the_staff_guide_says_what_the_page_does_for_a_missed_change():
     assert "may differ" in section and "If you are not sure, call Bart" in section
     assert "The page does not offer it there" not in section
     assert "The result page and the item page show it too" not in section
+
+
+# ---------------------------------------------------------------- round 6 L9, the B8 corner: another product at that id
+
+
+def miss_on_b_with_another_product(web):
+    """B missed the edit, and its last read shows another product at that id. A settle is refused there,
+    and an edit from the page meets the same product, so no button may point at either."""
+    miss_on_b(web)
+    web.env.fakes["B"].preload(tuple(Item(1, "1777", "1777", "Test Other", "10.00", timestamp="2026-01-01 00:00:00").to_fields()))
+    web.env.svc.compare_scales(["B"])
+    rows = [u for u in web.env.svc.list_unfinished() if u.scale == "B"]
+    assert [(u.kind, u.plu) for u in rows] == [("missed_change", "1001")], "the miss is still real"
+
+
+def test_a_missed_change_on_a_scale_holding_another_product_has_no_button_and_says_why(make_web):
+    web = make_web({"A": True, "B": True}, clock=ticking_clock())
+    miss_on_b_with_another_product(web)
+    [card] = web.client.get("/api/unfinished").json()["items"]
+    assert card["button"] is None and card["no_fix"] is True
+    assert card["text"] == "The newest change to PLU 1001 has not reached B."
+    assert "When B was last read, it had a different product at this number." in card["more"]
+    assert "Tell Bart." in card["more"] and "Change this item" not in card["more"] and "Test Other" not in card["more"]
+
+
+def test_the_item_page_row_says_another_product_and_offers_no_fix(make_web):
+    web = make_web({"A": True, "B": True}, clock=ticking_clock())
+    miss_on_b_with_another_product(web)
+    rows = {r["scale"]: r for r in web.client.get("/api/item/1001").json()["scales"]}
+    b = rows["B"]
+    assert b["flag"] == "different_product" and b["can_fix"] is False
+    assert b["missed"]["kind"] == "other_product" and "This page cannot fix that." in b["text"]
+    assert "Change this item" not in b["text"]
+
+
+def test_the_settle_refusal_no_longer_points_to_change_this_item(make_web):
+    web = make_web({"A": True, "B": True}, clock=ticking_clock())
+    miss_on_b_with_another_product(web)
+    r = web.post("/api/settle/preview", {"scale": "B", "take": "catalog", "plu": "1001"}).json()
+    assert r["ok"] is False and r["errors"][0]["code"] == "plu_edit_held"
+    message = r["errors"][0]["message"]
+    assert "Change this item" not in message and "different product" in message and "Tell Bart." in message
+
+
+def test_the_other_product_words_keep_the_writing_rule():
+    u = UnfinishedWork("B", "missed_change", 1, "1001", (), {"tool": "scale_preview_settle_drift"}, "x", "read_failed", "c1")
+    [card] = words.unfinished_cards([u], {}, {("B", 1)})
+    said = words.missed_settle_words(u, True, ["plu", "code"])
+    plain = words.plain_error({"code": "plu_edit_held", "message": "x", "index": 0, "field": "plu"}, False)["message"]
+    for text in (card["text"], card["more"], said["stop_text"], plain):
+        assert "\u2014" not in text and "--" not in text
+    assert said["kind"] == "other_product" and card["button"] is None
+    assert words.unfinished_cards([u])[0]["button"] == "Fix this on B", "without another product the fix stays"

@@ -502,7 +502,9 @@ def plain_error(error: dict[str, Any], unfinished: bool = False, how: dict[str, 
         text = ("A PLU change did not finish on this scale, so it may still be on the old PLU. "
                 "Settling would undo that change. Repeat the PLU change instead.")
     elif code == "plu_edit_held":
-        text = "Settling cannot change a PLU on a scale. To change a PLU, use Change this item. Or ask Bart."
+        # A change of this item from the page would meet the same other product and be refused, so it is not offered.
+        text = ("This scale has a different PLU at this number, so it may hold a different product. "
+                "Settling cannot change a PLU on a scale, and this page cannot force it. Tell Bart.")
     elif code in TABLE_DRIFT_WORDS:
         text = f"{TABLE_DRIFT_WORDS[code]['blocked']} {TABLE_DRIFT_WORDS[code]['more']}"
     elif code == "reload_differences":
@@ -607,31 +609,56 @@ def _plu_phrase(plu: Any) -> str:
     return f"PLU {plu}" if _FOUR_DIGITS.fullmatch(str(plu)) else "an item"
 
 
-def _missed_kind(u: Any) -> str:
-    """Which words a missed change gets. Each of these needs its own card, because each asks for something different."""
+def _missed_kind(u: Any, other_product: bool = False) -> str:
+    """Which words a missed change gets. Each of these needs its own card, because each asks for something different.
+    other_product: the scale's last read had a different PLU or Code at that id. A settle never changes a PLU,
+    and a change from the page cannot replace another product, so nothing on the page can finish it."""
     if getattr(u, "may_be_frozen", False) is True:
         return "frozen"
     if getattr(u, "catalog_took_it", True) is not True:
         return "not_taken"
+    if other_product:
+        return "other_product"
     return "fixable"
 
 
-def _missed_card(u: Any, how: str | None = None) -> dict[str, Any]:
+def holds_other_product(read: Item | None, wanted: Item) -> bool:
+    """The scale's last read had a different PLU or Code at this id, so it may hold another product."""
+    if read is None:
+        return False
+    differs = differing_fields(read, wanted)
+    return "plu" in differs or "code" in differs
+
+
+def _other_product_words(scale: str) -> str:
+    return (f"When {scale} was last read, it had a different product at this number. This page cannot fix that. "
+            "Settling never changes a PLU, and a change from here cannot replace another product. Tell Bart.")
+
+
+def _missed_card(u: Any, how: str | None = None, other_product: bool = False) -> dict[str, Any]:
     """One missed change on one scale."""
     plu_text = _plu_phrase(u.plu)
     card: dict[str, Any] = {
         "kind": u.kind, "item_id": u.item_id, "plu": u.plu, "scales": [u.scale], "old_plus": [], "repeat": dict(u.repeat),
         "target": u.plu, "stopping": [], "rolled_up": False, "no_fix": False, "button": None,
     }
-    kind = _missed_kind(u)
+    kind = _missed_kind(u, other_product)
     if kind == "frozen":
         card["no_fix"] = True
         card["text"] = f"The newest change to {plu_text} has not been confirmed on {u.scale}."
         card["more"] = f"{stop_words(how)} Do not check or change {u.scale} until someone has looked at it."
+    elif kind == "other_product":
+        card["no_fix"] = True
+        card["text"] = f"The newest change to {plu_text} has not reached {u.scale}."
+        card["more"] = _other_product_words(u.scale)
     elif kind == "not_taken":
         card["no_fix"] = True
         card["text"] = f"A change to {plu_text} did not finish, and our list did not take it."
         card["more"] = f"{u.scale} may hold the new value. {CHECK_THEN_CALL} Putting our list on {u.scale} would put the old value back."
+    elif getattr(u, "differs_in", ()) and getattr(u, "from_last_read", False):
+        card["text"] = f"{u.scale} may differ from our list on {plu_text}."
+        card["more"] = f"Our list was changed to match another scale. Nothing was sent to {u.scale}, and when it was last read it had something else. Look at the scale."
+        card["button"] = f"Fix this on {u.scale}"
     elif getattr(u, "differs_in", ()):
         card["text"] = f"{u.scale} may differ from our list on {plu_text}."
         card["more"] = f"The last record sent to {u.scale} did not bring it to our list. Nobody may have read it since. Look at the scale."
@@ -669,11 +696,15 @@ def missed_settle_words(u: Any, read_since: bool, differs: list[str]) -> dict[st
     Nobody knows what it holds unless a read came after that change, so it never says it holds something different until then.
     """
     scale = u.scale
-    if getattr(u, "differs_in", ()):
+    if getattr(u, "differs_in", ()) and getattr(u, "from_last_read", False):
+        status_text = f"Our list was changed to match another scale. Nothing was sent to {scale}."
+    elif getattr(u, "differs_in", ()):
         status_text = f"The last record sent to {scale} did not bring it to our list."
     else:
         status_text = f"Last change on {scale}: {status_words(u.status)[0]}"
-    kind = _missed_kind(u)
+    kind = _missed_kind(u, "plu" in differs or "code" in differs)
+    if kind == "other_product":
+        return {"kind": kind, "status_text": status_text, "read_since": read_since, "text": "", "stop_text": _other_product_words(scale)}
     if kind == "frozen":
         return {"kind": kind, "status_text": status_text, "stop_text": f"{DID_NOT_ANSWER} Do not check or change {scale} until someone has looked at it.", "read_since": read_since, "text": ""}
     if kind == "not_taken":
@@ -688,7 +719,8 @@ def missed_settle_words(u: Any, read_since: bool, differs: list[str]) -> dict[st
     return {"kind": kind, "status_text": status_text, "read_since": read_since, "text": text, "stop_text": ""}
 
 
-def unfinished_cards(work: list[Any], how: dict[str, str] | None = None) -> list[dict[str, Any]]:
+def unfinished_cards(work: list[Any], how: dict[str, str] | None = None,
+                     other_product: set[tuple[str, int]] | frozenset[tuple[str, int]] = frozenset()) -> list[dict[str, Any]]:
     """Changes some scale has not confirmed, one card for each item, in staff words.
 
     This is from the catalog with no scale contact, so it says what may be so. The old PLU is only
@@ -696,7 +728,8 @@ def unfinished_cards(work: list[Any], how: dict[str, str] | None = None) -> list
     it can only ever hit that item: if the id now holds something else, the library refuses it.
     A missed change is settled one scale at a time, so it gets one card for each scale, and many on one
     scale roll up into one card. One the catalog did not take, or from a scale that did not answer,
-    has no fix button, because tapping it would undo the change or read that scale again.
+    has no fix button, because tapping it would undo the change or read that scale again. Neither has one
+    on a scale whose last read had another product at that id, named in other_product as (scale, item id).
     """
     groups: dict[tuple[str, int, Any, Any], dict[str, Any]] = {}
     missed: dict[str, dict[str, list[Any]]] = {}
@@ -707,7 +740,7 @@ def unfinished_cards(work: list[Any], how: dict[str, str] | None = None) -> list
                           "rolled_up": False, "no_fix": True, "button": None, "text": LIST_FAILED_TEXT, "more": LIST_FAILED_MORE})
             continue
         if u.kind == "missed_change":
-            missed.setdefault(u.scale, {}).setdefault(_missed_kind(u), []).append(u)
+            missed.setdefault(u.scale, {}).setdefault(_missed_kind(u, (u.scale, u.item_id) in other_product), []).append(u)
             continue
         card = groups.setdefault((u.kind, u.item_id, u.repeat.get("plu"), u.repeat.get("scale")), {
             "kind": u.kind, "item_id": u.item_id, "plu": u.plu, "scales": [], "old_plus": [], "repeat": dict(u.repeat), "frozen": [],
@@ -753,7 +786,7 @@ def unfinished_cards(work: list[Any], how: dict[str, str] | None = None) -> list
             if len(rows) > ROLL_UP_ABOVE:
                 cards.append(_rolled_up_card(scale, rows, kind, (how or {}).get(scale)))
             else:
-                cards.extend(_missed_card(u, (how or {}).get(u.scale)) for u in rows)
+                cards.extend(_missed_card(u, (how or {}).get(u.scale), (u.scale, u.item_id) in other_product) for u in rows)
     return cards
 
 def item_card(item: Item) -> dict[str, str | int]:
