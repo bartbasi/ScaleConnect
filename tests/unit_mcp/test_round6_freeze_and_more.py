@@ -88,7 +88,7 @@ def test_a_one_scale_stall_that_moved_nothing_is_still_named(make_env):
     env.fakes["B"].clear_faults()
     data = session.data("scale_list_scales")
     assert data["unfinished"] == [] and data["scales_may_be_frozen"] == ["B"]
-    assert "B: gave no reply, and no read of it has answered since, so it MAY BE FROZEN" in data["summary"]
+    assert "B: connected, then gave no reply, and no read of it has answered since, so it MAY BE FROZEN" in data["summary"]
     assert server_module._FROZEN_NEXT_STEP in data["next_step"]
     env.svc.compare_scales(["B"])
     data = session.data("scale_list_scales")

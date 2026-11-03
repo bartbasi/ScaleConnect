@@ -507,6 +507,7 @@ def plu_roles(plu: str, old_plus: Any, repeat: dict[str, Any]) -> tuple[str, lis
 
 ROLL_UP_ABOVE = 5  # more missed changes than this on one scale get one card, with every row still in the data
 DID_NOT_ANSWER = "Did not answer. Tell Bart."
+COULD_NOT_CONNECT = "Could not connect. Tell Bart."
 CHECK_THEN_CALL = "Check this scale, then call Bart."
 LIST_FAILED_TEXT = "The list of work not finished could not be built."
 LIST_FAILED_MORE = "Do not take this as all clear. Tell Bart."
@@ -533,19 +534,29 @@ def frozen_send_refusal(names: list[str]) -> str:
     return f"{frozen_refusal(names)['message']} Go back and review it again. {where} will be left out."
 
 
-def frozen_scale_card(scale: str) -> dict[str, Any]:
+def stop_words(how: str | None = None) -> str:
+    """The first words for a scale that may be frozen. how is unreachable when the connect failed, which can be
+    the WiFi or a frozen scale. Either way nothing reads it until someone has looked."""
+    return COULD_NOT_CONNECT if how == "unreachable" else DID_NOT_ANSWER
+
+
+def frozen_scale_card(scale: str, how: str | None = None) -> dict[str, Any]:
     """A scale that gave no reply, with nothing unfinished on it and no read since that answered. The reply may
     have been missed on a change, a check or a review."""
+    if how == "unreachable":
+        text = f"{scale} could not be reached earlier, and nothing has read it since. It may be off the WiFi, or it may be frozen."
+    else:
+        text = f"{scale} did not answer earlier, and nothing has read it since."
     return {"kind": "frozen_scale", "item_id": None, "plu": None, "scales": [scale], "old_plus": [], "repeat": {}, "target": None,
-            "stopping": [], "rolled_up": False, "no_fix": True, "button": None,
-            "text": f"{scale} did not answer earlier, and nothing has read it since.",
-            "more": f"{DID_NOT_ANSWER} {frozen_more([scale])} A change goes to the other scales only."}
+            "stopping": [], "rolled_up": False, "no_fix": True, "button": None, "how": how or "unknown",
+            "text": text,
+            "more": f"{stop_words(how)} {frozen_more([scale])} A change goes to the other scales only."}
 
 
-def frozen_read_row(scale: str) -> dict[str, Any]:
-    """A scale a check left out, because it did not answer earlier."""
+def frozen_read_row(scale: str, how: str | None = None) -> dict[str, Any]:
+    """A scale a check left out, because it did not answer earlier, or could not be reached."""
     return {"scale": scale, "status": "not_contacted", "severity": BAD, "may_be_frozen": False,
-            "text": f"{scale}: {DID_NOT_ANSWER} It was not read now. {frozen_more([scale])}"}
+            "text": f"{scale}: {stop_words(how)} It was not read now. {frozen_more([scale])}"}
 
 
 def _plu_phrase(plu: Any) -> str:
@@ -561,7 +572,7 @@ def _missed_kind(u: Any) -> str:
     return "fixable"
 
 
-def _missed_card(u: Any) -> dict[str, Any]:
+def _missed_card(u: Any, how: str | None = None) -> dict[str, Any]:
     """One missed change on one scale."""
     plu_text = _plu_phrase(u.plu)
     card: dict[str, Any] = {
@@ -572,7 +583,7 @@ def _missed_card(u: Any) -> dict[str, Any]:
     if kind == "frozen":
         card["no_fix"] = True
         card["text"] = f"The newest change to {plu_text} has not been confirmed on {u.scale}."
-        card["more"] = f"{DID_NOT_ANSWER} Do not check or change {u.scale} until someone has looked at it."
+        card["more"] = f"{stop_words(how)} Do not check or change {u.scale} until someone has looked at it."
     elif kind == "not_taken":
         card["no_fix"] = True
         card["text"] = f"A change to {plu_text} did not finish, and our list did not take it."
@@ -588,7 +599,7 @@ def _missed_card(u: Any) -> dict[str, Any]:
     return card
 
 
-def _rolled_up_card(scale: str, rows: list[Any], kind: str) -> dict[str, Any]:
+def _rolled_up_card(scale: str, rows: list[Any], kind: str, how: str | None = None) -> dict[str, Any]:
     """Many missed changes on one scale, such as a failed reload. One check of that scale clears any that match."""
     count = len(rows)
     card: dict[str, Any] = {
@@ -598,7 +609,7 @@ def _rolled_up_card(scale: str, rows: list[Any], kind: str) -> dict[str, Any]:
     }
     if kind == "frozen":
         card["text"] = f"{count} items have not been confirmed on {scale}."
-        card["more"] = f"{DID_NOT_ANSWER} Do not check or change {scale} until someone has looked at it."
+        card["more"] = f"{stop_words(how)} Do not check or change {scale} until someone has looked at it."
     elif kind == "not_taken":
         card["text"] = f"{count} changes did not finish, and our list did not take them."
         card["more"] = f"{scale} may hold the new values. {CHECK_THEN_CALL} Putting our list on {scale} would put the old values back."
@@ -633,7 +644,7 @@ def missed_settle_words(u: Any, read_since: bool, differs: list[str]) -> dict[st
     return {"kind": kind, "status_text": status_text, "read_since": read_since, "text": text, "stop_text": ""}
 
 
-def unfinished_cards(work: list[Any]) -> list[dict[str, Any]]:
+def unfinished_cards(work: list[Any], how: dict[str, str] | None = None) -> list[dict[str, Any]]:
     """Changes some scale has not confirmed, one card for each item, in staff words.
 
     This is from the catalog with no scale contact, so it says what may be so. The old PLU is only
@@ -690,14 +701,15 @@ def unfinished_cards(work: list[Any]) -> list[dict[str, Any]]:
         if frozen:
             # A repeat reads every scale it names, and one of them did not answer.
             card["button"] = None
-            card["more"] = f"{DID_NOT_ANSWER} {frozen_more(frozen)}"
+            all_unreachable = all((how or {}).get(name) == "unreachable" for name in frozen)
+            card["more"] = f"{stop_words('unreachable' if all_unreachable else None)} {frozen_more(frozen)}"
         cards.append(card)
     for scale, kinds in missed.items():
         for kind, rows in kinds.items():
             if len(rows) > ROLL_UP_ABOVE:
-                cards.append(_rolled_up_card(scale, rows, kind))
+                cards.append(_rolled_up_card(scale, rows, kind, (how or {}).get(scale)))
             else:
-                cards.extend(_missed_card(u) for u in rows)
+                cards.extend(_missed_card(u, (how or {}).get(u.scale)) for u in rows)
     return cards
 
 def item_card(item: Item) -> dict[str, str | int]:

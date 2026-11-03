@@ -128,6 +128,8 @@ def fixed_next_steps():
         server_module._LAGGING_NEXT_STEP,
         server_module._PLU_NOT_FINISHED_NEXT_STEP,
         server_module._DELETE_NOT_FINISHED_NEXT_STEP,
+        server_module._PLU_NOT_FINISHED_FROZEN_NEXT_STEP,
+        server_module._DELETE_NOT_FINISHED_FROZEN_NEXT_STEP,
         server_module._GAP_NEXT_STEP,
         server_module._TABLE_NEXT_STEP,
         server_module._FILL_NOT_PREVIEWED_NEXT_STEP,

@@ -159,7 +159,7 @@ You see one line for each scale.
 | The scale refused it | The scale said Error. It should not have changed. | Look at the scale. Tell Bart. |
 | No clear answer | We do not know if it changed. | Look at the scale. Do not send again. Tell Bart. |
 | The scale took it, but now shows something different | The scale holds other values than you asked for. | Look at the scale. Tell Bart. |
-| Could not connect | Nothing was sent. The scale is as it was. | Check the scale is on and on WiFi. Try again in a minute. |
+| Could not connect | Nothing was sent. The scale is as it was. It may be off the WiFi, or frozen. | Check the scale is on and on WiFi. Tell Bart. The page leaves that scale out until he has looked at it. |
 | Could not read the scale first | Nothing was sent. | Try again in a minute. |
 | This is not the scale it should be | Nothing was sent. | Tell Bart. |
 | The scale holds something different from our list | Nothing was sent. | Tell Bart. Do not force it. |
@@ -191,7 +191,7 @@ Never tell a customer a price is changed until every scale says "changed and che
 4. If the page stopped or the phone went to sleep, open it again and look at "Recent changes".
 5. Tell Bart what you saw. Say which scale.
 
-If one scale says "could not connect", wait a minute. A scale can be busy for about 10 seconds after a change.
+If one scale says "could not connect", check that it is on and on WiFi, and tell Bart. The page leaves it out of the next changes until he has looked at it. The other scales still get changes.
 
 ## If a scale differs from the list
 
@@ -234,7 +234,7 @@ This means the scale stopped answering the page. It may have frozen. It can stil
 
 Nothing was changed on a scale that did not answer, unless the line for that scale says otherwise. Check the price on the scale display.
 
-For Bart: the reload command is in `docs/CLI.md`. Do not read the scale again until it has been checked. Once you have looked at it, read it once to clear "Did not answer": ask Claude to compare that scale, or run the compare command for that one scale at the command line. `docs/CLI.md` has it. A compare that answers clears it, even if the scale is empty after a factory reset. Then finish anything still listed, including each change it was left out of, with a settle through Claude or `settle` at the command line. A reload clears it too. If its reads and writes are both turned off in the settings file, the page stops counting it at once, but then it gets no changes at all.
+For Bart: the reload command is in `docs/CLI.md`. Do not read the scale again until it has been checked. Once you have looked at it, read it once to clear "Did not answer" or "Could not connect": ask Claude to compare that scale, or run the compare command for that one scale at the command line. `docs/CLI.md` has it. A compare that answers clears it, even if the scale is empty after a factory reset. Then finish anything still listed, including each change it was left out of, with a settle through Claude or `settle` at the command line. A reload clears it too.
 
 Never touch the scale's calibration or settings. ScaleConnect does not change them.
 

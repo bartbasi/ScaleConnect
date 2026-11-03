@@ -48,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     commands.add_parser("capabilities", help="what this version can do")
     commands.add_parser("scales", help="list scales and last known status. Contacts no scale")
+    commands.add_parser("frozen", help="scales that may be frozen, and how each stopped answering. Contacts no scale")
 
     search = commands.add_parser("search", help="find items in the catalog")
     search.add_argument("query")
@@ -154,6 +155,10 @@ def _run(args: argparse.Namespace) -> int:
             _emit(service.capabilities().to_dict())
         elif args.command == "scales":
             _emit([info.to_dict() for info in service.list_scales()])
+        elif args.command == "frozen":
+            names = service.scales_may_be_frozen()
+            how = service.frozen_how()
+            _emit({"scales_may_be_frozen": names, "how": {name: how.get(name, "unknown") for name in names}})
         elif args.command == "search":
             _emit([item.to_dict() for item in service.search_items(args.query, limit=args.limit)])
         elif args.command == "get":

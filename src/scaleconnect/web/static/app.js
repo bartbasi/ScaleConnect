@@ -323,7 +323,7 @@
       var rows = d.scales.map(function (s) {
         var bad = s.flag === 'different' || s.flag === 'different_product' || s.flag === 'missing' || s.flag === 'unfinished' || s.flag === 'frozen';
         var cls = s.flag === 'same' ? 'ok' : (bad ? 'bad' : (s.flag === 'unsure' ? 'warn' : ''));
-        var tag = s.flag === 'same' ? 'Matches' : (s.flag === 'frozen' ? 'Did not answer' : (s.flag === 'unfinished' ? 'Not finished' : (s.flag === 'different_product' ? 'Different product' : (bad ? 'Different' : (s.flag === 'unsure' ? 'Not sure' : 'Unknown')))));
+        var tag = s.flag === 'same' ? 'Matches' : (s.flag === 'frozen' ? (s.frozen_how === 'unreachable' ? 'Could not connect' : 'Did not answer') : (s.flag === 'unfinished' ? 'Not finished' : (s.flag === 'different_product' ? 'Different product' : (bad ? 'Different' : (s.flag === 'unsure' ? 'Not sure' : 'Unknown')))));
         var more = s.last_read ? 'Last read: PLU ' + s.last_read.plu + ', ' + s.last_read.description + ', ' + money(s.last_read.price) +
           (s.last_read_at ? ' (' + fmtTime(s.last_read_at) + ')' : '') : null;
         var extra = s.can_change ? null : 'Changes are turned off for this scale.';
@@ -344,8 +344,15 @@
       /* A scale that did not answer must not be read again until someone has looked at it. The server leaves it out
          of a check and of every review, and a change goes to the other scales. This only says so before anyone taps. */
       var frozen = d.frozen_scales || [];
-      var stuck = frozen.length ? box('bad', 'Did not answer', 'Did not answer. Tell Bart.',
-        frozen.join(', ') + ' did not answer earlier. This page will not check or change ' + frozen.join(', ') +
+      /* A scale that could not be reached may only be off the WiFi, but nobody knows, so it is treated the same way. */
+      var how = d.frozen_how || {};
+      var noConnect = frozen.filter(function (n) { return how[n] === 'unreachable'; });
+      var noAnswer = frozen.filter(function (n) { return how[n] !== 'unreachable'; });
+      var why = (noAnswer.length ? noAnswer.join(', ') + ' did not answer earlier. ' : '') +
+        (noConnect.length ? noConnect.join(', ') + ' could not be reached earlier. It may be off the WiFi, or it may be frozen. ' : '');
+      var stuck = frozen.length ? box('bad', noAnswer.length ? 'Did not answer' : 'Could not connect',
+        noAnswer.length ? 'Did not answer. Tell Bart.' : 'Could not connect. Tell Bart.',
+        why + 'This page will not check or change ' + frozen.join(', ') +
         ' until Bart has looked at it. A change goes to the other scales only.') : null;
       var nodes = [
         h('p', { class: 'small' }, h('a', { href: '#/', text: 'Back to search' })),

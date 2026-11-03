@@ -325,6 +325,7 @@ def create_app(
         # From the catalog, with no scale contact. A scale behind a PLU change must be finished, never settled.
         unfinished_now = service.list_unfinished()
         frozen_now = frozen_scales(unfinished_now)
+        how = service.frozen_how() if frozen_now else {}
         behind = {(u.scale, u.item_id): u for u in unfinished_now if u.kind == "plu_change"}
         missed = {(u.scale, u.item_id): u for u in unfinished_now if u.kind == "missed_change"}
         rows = []
@@ -393,8 +394,8 @@ def create_app(
                     row.update(can_fix=row["can_fix"] or info.write_enabled)
             if info.name in frozen_now:
                 # Every button on this row would read that scale, so none is offered, of any kind.
-                stop = f"{words.DID_NOT_ANSWER} {words.frozen_more([info.name])}"
-                row.update(flag="frozen", can_fix=False, repeat=None, repeat_meta=None, text=stop)
+                stop = f"{words.stop_words(how.get(info.name))} {words.frozen_more([info.name])}"
+                row.update(flag="frozen", can_fix=False, repeat=None, repeat_meta=None, text=stop, frozen_how=how.get(info.name, "unknown"))
                 if row["missed"] is not None:
                     row["missed"] = {**row["missed"], "kind": "frozen", "stop_text": stop, "text": ""}
             rows.append(row)
@@ -411,6 +412,7 @@ def create_app(
             "interrupted": interrupted,
             "sending_now": jobs.busy(),
             "frozen_scales": frozen_now,
+            "frozen_how": {name: how.get(name, "unknown") for name in frozen_now},
         }
 
     # ------------------------------------------------------------ preview
@@ -507,9 +509,10 @@ def create_app(
         """Changes some scale has not confirmed. From the catalog and its log, no scale contact.
         A scale that may be frozen with no row of its own still gets a card, so staff hear it before they try a change."""
         work = service.list_unfinished()
-        cards = words.unfinished_cards(work)
+        how = service.frozen_how()  # could not connect, or connected and gave no reply. Both are treated the same.
+        cards = words.unfinished_cards(work, how)
         in_rows = {u.scale for u in work if u.may_be_frozen}
-        cards.extend(words.frozen_scale_card(name) for name in frozen_scales(work) if name not in in_rows)
+        cards.extend(words.frozen_scale_card(name, how.get(name)) for name in frozen_scales(work) if name not in in_rows)
         return {"items": cards}
 
     @app.post("/api/check")
@@ -526,7 +529,8 @@ def create_app(
         rows = {r.scale: words.read_row(r.scale, r.status, r.may_be_frozen) for r in reads}
         # The service left out, under the lock, any scale that stopped answering since the line above.
         skipped = [r.scale for r in reads if r.status == "not_contacted" and r.may_be_frozen]
-        rows.update({name: words.frozen_read_row(name) for name in [*frozen, *skipped]})
+        how = service.frozen_how() if frozen or skipped else {}
+        rows.update({name: words.frozen_read_row(name, how.get(name)) for name in [*frozen, *skipped]})
         return {"scales": [rows[s.name] for s in service.list_scales() if s.name in rows]}
 
     @app.post("/api/orphan")

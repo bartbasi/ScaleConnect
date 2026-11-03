@@ -66,7 +66,7 @@ STATUS_MEANINGS = {
     "wrong_scale": "The serial at that address does not match the config. Nothing was written.",
     "drift_refused": "The scale holds another product, differs and nobody acknowledged it, holds something in the way, holds a record that cannot be sent back, or has a table that does not look as the catalog expects. Nothing was written. See drift and items.",
     "skipped_not_write_enabled": "Writes are off for this scale in the config. Nothing was sent.",
-    "not_available": "Nothing was sent. The web page left this scale out because it may be frozen. An old logged change can show it too.",
+    "not_available": "Nothing was sent. This change left this scale out because it may be frozen, from the web page or a preview whose scales left it out. Treat it as may be frozen.",
     "not_sent": "An earlier problem on this scale stopped this record. It was not sent.",
 }
 
@@ -207,7 +207,7 @@ _STATUS_HELP = """Each scale gets one status. may_be_frozen true on a scale resu
 - unreachable, read_failed, wrong_scale: nothing was written.
 - drift_refused: the scale differs, or holds something in the way. Nothing was written. See drift and next_step. A reload may be the repair, and only a person can run it.
 - skipped_not_write_enabled: writes are off for this scale, so it still has the old value.
-- not_available: nothing sent. The web page gives it to a scale it left out because that scale may be frozen. Then each item is not_sent.
+- not_available: nothing sent. A scale left out because it may be frozen, by the web page or by scales, gets it. Each item is not_sent. Treat that scale as may be frozen.
 An item can also be not_sent: an earlier problem on that scale stopped it."""
 
 _OUTCOME_HELP = """outcome is one of:
@@ -391,8 +391,30 @@ def _warning_text(warning: Any) -> str:
     return f"({_word_text(warning.code)}{where}) {text}"
 
 
-def _frozen_line(name: str) -> str:
-    return f"{name}: MAY BE FROZEN. It gave no reply. Stop reading and writing it, and do not retry. It may need a reboot by a person."
+def _frozen_line(name: str, how: str | None = None) -> str:
+    """how is unreachable for a connect that failed, left_out for a scale a change left out, else it gave no reply."""
+    why = {
+        "unreachable": "It could not be reached. That can be the network or a frozen scale, so it still counts.",
+        "left_out": "It was left out because it gave no reply earlier, and nothing was sent.",
+    }.get(how or "", "It gave no reply.")
+    return f"{name}: MAY BE FROZEN. {why} Stop reading and writing it, and do not retry. It may need a reboot by a person."
+
+
+def _silent_line(name: str, how: str | None = None) -> str:
+    """A scale with a no reply and no read since, in scale_list_scales."""
+    if how == "unreachable":
+        return (
+            f"{name}: could not connect, and no read of it has answered since, so it MAY BE FROZEN. It may only be off the network, "
+            "but that is not known. Do not read it."
+        )
+    if how == "no_reply":
+        return f"{name}: connected, then gave no reply, and no read of it has answered since, so it MAY BE FROZEN. Do not read it."
+    return f"{name}: gave no reply, and no read of it has answered since, so it MAY BE FROZEN. Do not read it."
+
+
+def _frozen_in_record(record: ChangeRecord) -> list[str]:
+    """Scales a change says may be frozen: a result with may_be_frozen, or a scale the page left out for that reason."""
+    return [r.scale for r in record.scale_results if r.may_be_frozen or r.status == "not_available"]
 
 
 def _read_repeat_line(name: str) -> str:
@@ -585,6 +607,14 @@ _DELETE_NOT_FINISHED_NEXT_STEP = (
     "A scale that did not take this delete may still answer to the old PLU, and the id and PLU stay held. To try again, once that "
     "scale can take it and a person agrees, call scale_preview_changes with that same delete, and use scales to name that scale."
 )
+_PLU_NOT_FINISHED_FROZEN_NEXT_STEP = (
+    "This edit changes a PLU, and a scale that did not take it may still answer to the old PLU. It stays on the unfinished list in "
+    "scale_list_scales. Do not make a preview for that scale now: a preview reads every scale it names. A settle cannot finish it."
+)
+_DELETE_NOT_FINISHED_FROZEN_NEXT_STEP = (
+    "A scale that did not take this delete may still answer to the old PLU, and the id and PLU stay held. It stays on the unfinished "
+    "list in scale_list_scales. Do not make a preview for that scale now: a preview reads every scale it names."
+)
 _TABLE_NEXT_STEP = (
     "This scale's table does not look as the catalog expects, so nothing can be written to it, and no acknowledgement can change "
     "that. Do not retry. Tell the person, and ask them to look at the scale. The reload command may be the repair. It is theirs to "
@@ -717,7 +747,7 @@ def _still_to_do(record: ChangeRecord, full_success: bool, ended_miss: bool = Fa
     A settle names one scale, so with other scales configured it is never a full success. It still says what it changed."""
     if _settle_took_scale_record(record):
         return ["square"]
-    if any(result.may_be_frozen for result in record.scale_results):
+    if _frozen_in_record(record):
         return []
     if _settle_put_catalog_record(record) and (ended_miss or _settle_changed_sale(record)):
         return ["square", "labels"]
@@ -742,7 +772,8 @@ def _change_next_step(
         settle_steps.append(_SETTLE_CHANGED_SALE_NEXT_STEP)
     if ended_miss and _settle_put_catalog_record(record):
         settle_steps.append(_SETTLE_ENDED_MISS_NEXT_STEP)
-    frozen = any(result.may_be_frozen for result in record.scale_results)
+    frozen_names = _frozen_in_record(record)
+    frozen = bool(frozen_names)
     made_sale_change = any(change.action in _SALE_ACTIONS for change in record.changes)
     took_scale_record = _settle_took_scale_record(record)
     if full_success and not frozen:
@@ -765,7 +796,7 @@ def _change_next_step(
         return "Run scale_compare_scales to see what the scales hold, tell the person, then call scale_resolve_interrupted_change."
     # A scale shows only its worst status, so look at each record too.
     statuses = _all_statuses(record)
-    steps = [_FROZEN_NEXT_STEP] if frozen else []
+    steps = [f"{', '.join(frozen_names)} MAY BE FROZEN. {_FROZEN_NEXT_STEP}"] if frozen else []
     if frozen and (statuses & {"unknown", "mismatch"} or record.outcome in ("unknown", "catalog_out_of_sync", "in_progress")):
         steps.append(
             "Do not resend on your own. If you need to read the other scales, name them in scales, and tell the person what they "
@@ -797,10 +828,12 @@ def _change_next_step(
         steps.append(f"This change left out {', '.join(record.not_touched)}. Those scales keep what they hold.")
     if still_differ:
         steps.append("Tell the person the scales still differ, and in which fields. To end it, use scale_preview_settle_drift.")
+    # The repeat for a PLU change or a delete reads the scale it names, so it waits while one may be frozen.
+    wait = f" Leave out {', '.join(frozen_names)}, which may be frozen, until a person says it has been checked." if frozen else ""
     if any(change.action == "edit" and "plu" in change.fields for change in record.changes):
-        steps.append(_PLU_NOT_FINISHED_NEXT_STEP)
+        steps.append((_PLU_NOT_FINISHED_FROZEN_NEXT_STEP if frozen else _PLU_NOT_FINISHED_NEXT_STEP) + wait)
     if any(change.action == "delete" for change in record.changes):
-        steps.append(_DELETE_NOT_FINISHED_NEXT_STEP)
+        steps.append((_DELETE_NOT_FINISHED_FROZEN_NEXT_STEP if frozen else _DELETE_NOT_FINISHED_NEXT_STEP) + wait)
     if gap_may_remain:
         steps.append(_GAP_NEXT_STEP)
     if took_scale_record:
@@ -854,7 +887,9 @@ def _change_payload(record: ChangeRecord, ended_miss: bool = False) -> dict[str,
         status = _word_text(result.status)
         lines.append(f"{result.scale}: {status}. {STATUS_MEANINGS.get(result.status, '')}".strip())
         if result.may_be_frozen:
-            lines.append(_frozen_line(result.scale))
+            lines.append(_frozen_line(result.scale, "unreachable" if result.status == "unreachable" else None))
+        elif result.status == "not_available":
+            lines.append(_frozen_line(result.scale, "left_out"))
         if result.read_repeated:
             lines.append(_read_repeat_line(result.scale))
         lines.extend(f"Found before writing on {_drift_text(d)}." for d in result.drift)
@@ -880,7 +915,7 @@ def _change_payload(record: ChangeRecord, ended_miss: bool = False) -> dict[str,
         "items_verified_everywhere": sum(1 for row in rows if row["verified_on_every_configured_scale"]),
         "batch_partly_failed": partly_failed,
         "drift_tokens": drift_tokens,
-        "scales_may_be_frozen": [r.scale for r in record.scale_results if r.may_be_frozen],
+        "scales_may_be_frozen": _frozen_in_record(record),
         "scales_read_repeated": [r.scale for r in record.scale_results if r.read_repeated],
         "still_to_do": still_to_do,
         "next_step": next_step,
@@ -1320,11 +1355,10 @@ def build_server(service: ScaleConnectService, *, caller: str | None = None) -> 
             if len(unfinished_lines) > _SUMMARY_LIST_LIMIT:
                 lines.append(f"And {len(unfinished_lines) - _SUMMARY_LIST_LIMIT} more not finished. See unfinished.")
             frozen = service.scales_may_be_frozen(unfinished)
+            how = service.frozen_how()
             in_rows = {work.scale for work in unfinished if work.may_be_frozen}
             silent = [name for name in frozen if name not in in_rows]
-            lines.extend(
-                f"{name}: gave no reply, and no read of it has answered since, so it MAY BE FROZEN. Do not read it." for name in silent
-            )
+            lines.extend(_silent_line(name, how.get(name)) for name in silent)
             if restart:
                 lines.append("CONFIG CHANGED: the config file has changed since this server started. Previews and applies are refused until the server restarts.")
             steps = ([_RESTART_NEXT_STEP] if restart else []) + ([_unfinished_next_step(unfinished)] if unfinished else [])
@@ -1346,6 +1380,8 @@ def build_server(service: ScaleConnectService, *, caller: str | None = None) -> 
                     "config_changed_message": restart,
                     "unfinished": [_unfinished_row(work) for work in unfinished],
                     "scales_may_be_frozen": frozen,
+                    # unreachable: could not connect. no_reply: connected, then stopped answering. unknown: not kept. All may be frozen.
+                    "frozen_how": {name: how.get(name, "unknown") for name in frozen},
                     **extra,
                     "capabilities": capabilities,
                     "interrupted_change_ids": interrupted,

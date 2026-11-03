@@ -38,7 +38,8 @@ def test_a_read_with_no_reply_from_any_path_names_the_scale(make_env, path):
     env.fakes["B"].clear_faults()
     assert svc.scales_may_be_frozen() == ["B"]
     listed = Session(env).data("scale_list_scales")
-    assert listed["scales_may_be_frozen"] == ["B"] and "B: gave no reply, and no read of it has answered since" in listed["summary"]
+    assert listed["scales_may_be_frozen"] == ["B"] and "B: connected, then gave no reply, and no read of it has answered since" in listed["summary"]
+    assert listed["frozen_how"] == {"B": "no_reply"}
     svc.compare_scales(["B"])
     assert svc.scales_may_be_frozen() == []
 

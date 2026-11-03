@@ -42,7 +42,17 @@ _BUSY_SECONDS = 10
 BELIEFS = ("present", "absent", "unknown")
 _SUCCESS = ("verified", "accepted_not_verified")
 READ_NO_REPLY = "read_no_reply"  # a log event: a read that is not a logged change got no reply
-_ANSWERED_KEY = "read_answered:"  # a meta key, then the scale name: when a read of it last answered in full
+_ANSWERED_KEY = "read_answered:"  # a meta key, then the scale name: when a read of it last answered
+_ANSWERED_LOG_KEY = "read_answered_log:"  # a meta key, then the scale name: the newest log id at that moment
+
+
+def no_reply_how(status: object) -> str:
+    """How a no reply came about, from the status logged with it. unreachable: the connect failed, which can
+    be the network or a frozen scale. no_reply: it connected, then gave no reply. unknown: no status kept,
+    as in rows from before it was kept. All three count as may be frozen."""
+    if status == "unreachable":
+        return "unreachable"
+    return "no_reply" if isinstance(status, str) and status else "unknown"
 
 _COLS = (
     "id", "code", "plu", "description", "price", "field6",
@@ -895,13 +905,14 @@ class Catalog:
                     "ORDER BY log_id", (change_id,))]
 
     def scale_results_in_log(self) -> list[dict]:
-        """Every result a scale gave for a change, oldest first: {"change_id", "scale", "items", "at", "may_be_frozen"}.
+        """Every result a scale gave for a change, oldest first: {"log_id", "change_id", "scale", "items", "at", "may_be_frozen"}.
         A row that cannot be read raises ValueError. Skipping it could hide a real miss, so the caller says so."""
         out: list[dict] = []
         for r in self._conn().execute(
-                "SELECT change_id, payload, at FROM change_log WHERE event = 'scale_result' ORDER BY log_id"):
+                "SELECT log_id, change_id, payload, at FROM change_log WHERE event = 'scale_result' ORDER BY log_id"):
             payload = json.loads(r["payload"])
             out.append({
+                "log_id": r["log_id"],
                 "change_id": r["change_id"],
                 "scale": payload.get("scale"),
                 "items": payload.get("items", []),
@@ -910,12 +921,14 @@ class Catalog:
             })
         return out
 
-    def frozen_scale_results(self) -> list[tuple[str, str]]:
+    def frozen_scale_results(self, *, detail: bool = False) -> list:
         """(scale, at) for each logged scale result that says the scale gave no reply, oldest first.
-        The text filter only narrows the search. Each row is parsed, and one that cannot be is left out."""
-        out: list[tuple[str, str]] = []
+        The text filter only narrows the search. Each row is parsed, and one that cannot be is left out.
+
+        detail gives dicts instead: {"log_id", "scale", "at", "how"}, with how from no_reply_how."""
+        out: list = []
         for r in self._conn().execute(
-                "SELECT payload, at, scale FROM change_log WHERE event = 'scale_result' "
+                "SELECT log_id, payload, at, scale FROM change_log WHERE event = 'scale_result' "
                 "AND (payload LIKE '%\"may_be_frozen\": true%' OR payload LIKE '%\"may_be_frozen\":true%') ORDER BY log_id"):
             try:
                 payload = json.loads(r["payload"])
@@ -923,34 +936,67 @@ class Catalog:
                 continue
             scale = payload.get("scale") if isinstance(payload, dict) else None
             if isinstance(scale, str) and payload.get("may_be_frozen") is True and isinstance(r["at"], str):
-                out.append((scale, r["at"]))
+                if detail:
+                    out.append({"log_id": r["log_id"], "scale": scale, "at": r["at"], "how": no_reply_how(payload.get("status"))})
+                else:
+                    out.append((scale, r["at"]))
         return out
 
-    def note_read_no_reply(self, scale: str, what: str, at: str) -> None:
+    def note_read_no_reply(self, scale: str, what: str, at: str, status: str | None = None) -> None:
         """A read of this scale that is not a logged change ended with may_be_frozen: a check, a preview,
-        a settle preview, a compare or an orphan read. Kept in the log, which has no update and no delete."""
-        self.append_log(uuid.uuid4().hex, READ_NO_REPLY, {"scale": scale, "read": what, "may_be_frozen": True, "at": at}, at)
+        a settle preview, a compare or an orphan read. Kept in the log, which has no update and no delete.
+        status is the read's own status, such as unreachable for a connect that failed."""
+        payload: dict = {"scale": scale, "read": what, "may_be_frozen": True, "at": at}
+        if isinstance(status, str):
+            payload["status"] = status
+        self.append_log(uuid.uuid4().hex, READ_NO_REPLY, payload, at)
 
-    def read_no_reply_events(self) -> list[tuple[str, str]]:
+    def read_no_reply_events(self, *, detail: bool = False) -> list:
         """(scale, at) for each read noted by note_read_no_reply, oldest first. A row that cannot be read is
-        given with the scale from its own column, so a damaged row still counts against that scale."""
-        out: list[tuple[str, str]] = []
+        given with the scale from its own column, so a damaged row still counts against that scale.
+
+        detail gives dicts instead: {"log_id", "scale", "at", "how"}, as frozen_scale_results does.
+        A row whose payload cannot be read, or that has no status, is "unknown"."""
+        out: list = []
         for r in self._conn().execute(
-                "SELECT payload, at, scale FROM change_log WHERE event = ? ORDER BY log_id", (READ_NO_REPLY,)):
+                "SELECT log_id, payload, at, scale FROM change_log WHERE event = ? ORDER BY log_id", (READ_NO_REPLY,)):
             if isinstance(r["scale"], str) and isinstance(r["at"], str):
-                out.append((r["scale"], r["at"]))
+                if not detail:
+                    out.append((r["scale"], r["at"]))
+                    continue
+                # Only fixed words and a scale name are in these rows, which note_read_no_reply writes with json.dumps.
+                # A plain search is enough for how, which picks words and never decides what is safe. Parsing
+                # each of many old rows on every page load would cost more.
+                text = r["payload"] if isinstance(r["payload"], str) else ""
+                how = "unreachable" if '"status": "unreachable"' in text else ("no_reply" if '"status": "' in text else "unknown")
+                out.append({"log_id": r["log_id"], "scale": r["scale"], "at": r["at"], "how": how})
         return out
 
     def note_read_answered(self, scale: str, at: str) -> None:
-        """A read of this scale answered in full, even if it found nothing to keep, such as an empty table.
-        One value per scale, in meta. Only the newest matters."""
+        """A read of this scale answered, even if it found nothing to keep, such as an empty table.
+        One value per scale, in meta. Only the newest matters.
+
+        It also keeps the newest log id at that moment, in the same transaction. Anything logged up to
+        then came before this answer. That place in the log does not depend on the clock."""
         with self._tx() as db:
             db.execute("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                        (_ANSWERED_KEY + scale, at))
+            newest = db.execute("SELECT COALESCE(MAX(log_id), 0) FROM change_log").fetchone()[0]
+            db.execute("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                       (_ANSWERED_LOG_KEY + scale, str(newest)))
 
     def read_answered_at(self, scale: str) -> str | None:
         row = self._conn().execute("SELECT value FROM meta WHERE key = ?", (_ANSWERED_KEY + scale,)).fetchone()
         return row[0] if row is not None else None
+
+    def read_answered_log_id(self, scale: str) -> int | None:
+        """The newest log id when a read of this scale last answered, or None if no read has answered
+        since this was first kept. A value that cannot be read counts as None."""
+        row = self._conn().execute("SELECT value FROM meta WHERE key = ?", (_ANSWERED_LOG_KEY + scale,)).fetchone()
+        try:
+            return int(row[0]) if row is not None else None
+        except (TypeError, ValueError):
+            return None
 
     def list_change_ids(self, limit: int = 50) -> list[str]:
         """Newest first, by when each change first appears in the log. A read with no reply is not a change,

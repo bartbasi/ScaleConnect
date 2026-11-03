@@ -18,6 +18,7 @@ Words in capitals are values you supply. An option marked "can repeat" can be gi
 |---|---|---|
 | `capabilities` | What this version can do | No |
 | `scales` | The scales, whether writes are on, and the last known status | No |
+| `frozen` | The scales that may be frozen, and how each one stopped answering | No |
 | `search QUERY [--limit N]` | Find items in the catalog by PLU or description. `--limit` defaults to 50 | No |
 | `get --plu PLU` or `get --id ID` | One item from the catalog, with what is recorded for each scale. Give one of the two | No |
 | `preview` | Check a list of changes. Changes nothing | Only with `--read` |
@@ -86,7 +87,36 @@ A whole table read takes about 30 seconds at the default pace.
 
 If a read gets no reply, the message says the scale may have frozen and may need a reboot. Check the scale before trying again. A read has frozen scales with damaged or old records. A gap in the ids is suspected too, but not proven.
 
-While a scale may be frozen, the web page sends nothing to it, and says "Did not answer. Tell Bart." That is after a logged change, a reload or any read, here or on the page, got no reply from it, and no read of it has answered since. A page review leaves that scale out, and the change goes to the other scales. The scale is then listed as missing that change. Once you have looked at the scale, `compare --scale NAME` reads it once. If it answers, that clears it, even if the table is empty after a factory reset. Then `settle` finishes anything still listed, including each change the page left it out of. A reload clears it too. Turning that scale's reads and writes both off in the config makes the page stop counting it at once, but then it gets no changes.
+While a scale may be frozen, the web page sends nothing to it. That is after a logged change, a reload or any read, here or on the page, got no reply from it, and no read of it has answered since. The page says "Could not connect. Tell Bart." if the last try could not connect, which can be the network or a frozen scale. It says "Did not answer. Tell Bart." if the scale connected and then stopped answering. Both count the same way. A page review leaves that scale out, and the change goes to the other scales. The scale is then listed as missing that change. A `preview --scale` that leaves out a scale that may be frozen, with writes on, leaves it out the same way, so it is listed too.
+
+`frozen` shows which scales are flagged, and contacts no scale. In `how`, `unreachable` means could not connect, `no_reply` means it connected and then gave no reply, and `unknown` means an older row that did not keep it.
+
+Once you have looked at the scale, `compare --scale NAME` reads it once. Its `status` says what happened:
+
+- `compared`: it answered. That clears it, even if the table is empty after a factory reset. The page uses it again at once. Then `settle` finishes anything still listed, including each change it was left out of.
+- `unreachable`: it could not connect. The flag stays. It may still be off the network, or frozen.
+- `read_failed` with `may_be_frozen` true: it connected and then stopped answering. The flag stays. Have someone reboot it before you try again.
+
+Do not repeat the compare over and over. A reload clears it too.
+
+Only a read that answers clears it. Each such read keeps its place in the change log, and a no reply logged before that place is over. The clock does not decide, so a wrong clock or a damaged time in the log cannot keep a scale flagged for good.
+
+If you cannot clear it now, there is a way out. Turn that scale's reads and writes both off in the config, then restart the web page and the MCP server together. The page stops counting it, and staff can send changes to the other scales. That scale gets no changes at all until you turn it back on. To turn it back on, set reads and writes back on, restart both, then run `compare --scale NAME` once. The flag is still there until a read answers.
+
+### When Bart is away
+
+The page cannot clear a flag. That is on purpose. The Claude app on a phone cannot do it either, because the MCP server listens only on the store network, and the phone app cannot reach it. Use one of these:
+
+- Claude Code on a computer on the store network, with the ScaleConnect MCP server.
+- This command line on bartcc, or on a computer on the store network.
+- From a phone: SSH to bartcc over Tailscale, then this command line, or Claude Code, there.
+
+Then:
+
+1. Run `frozen` to see which scale is flagged, and how.
+2. Ask someone at the store to look at that scale. Is it on? Does the display work? If it seems frozen, they turn it off and on.
+3. Run `compare --scale NAME` once, and read its `status` as above.
+4. If it is still flagged, leave it, or use the config way out above. Until then the page leaves that scale out of every check and change, and each change it misses goes on the "Not finished" list.
 
 ### reload
 
@@ -120,7 +150,7 @@ Allow a few minutes. A full send of about 480 items took 90 to 160 seconds, then
 
 Output on standard output is always one JSON document, printed with an indent of 2. Prices are always text.
 
-- `capabilities`, `get`, `preview`, `settle`, `apply`, `change`, `resolve` and `reload` print one JSON object.
+- `capabilities`, `frozen`, `get`, `preview`, `settle`, `apply`, `change`, `resolve` and `reload` print one JSON object.
 - `scales`, `search`, `changes`, `compare` and `read` print a JSON list.
 - On failure the output is:
 
@@ -163,7 +193,7 @@ A validation failure also has an `errors` list inside `error`.
 | 9 | Backup failed. Nothing was sent |
 | 10 | Another apply is running. Nothing was sent |
 
-Exit 0 from `scales`, `search`, `get`, `capabilities`, `change`, `changes` and `resolve` only means the command ran.
+Exit 0 from `scales`, `frozen`, `search`, `get`, `capabilities`, `change`, `changes` and `resolve` only means the command ran.
 
 ## Examples
 
