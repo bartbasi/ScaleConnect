@@ -11,7 +11,7 @@ python -m scaleconnect.mcp_server --stdio
 python -m scaleconnect.mcp_server --http
 ```
 
-On bartcc, use `deploy/scaleconnect-mcp.sh` to start the HTTP server and keep it running. See `docs/INSTALL.md`. The script also stops it, and refuses to stop it during a send.
+On StoreServer, use `deploy/scaleconnect-mcp.sh` to start the HTTP server and keep it running. See `docs/INSTALL.md`. The script also stops it, and refuses to stop it during a send.
 
 Add `--config PATH` to use another config file. A config at any other path can reach only scales on this computer. That is a library rule, and it keeps a temp file from turning on a real scale.
 
@@ -36,7 +36,7 @@ mcp_token = "<TOKEN>"
 # mcp_caller = "invoice-desk"   # optional. See "Who asked"
 
 [mcp]
-host = "<STORE_HOST>"           # the store address on bartcc, not Tailscale
+host = "<STORE_HOST>"           # the store address on StoreServer, not Tailscale
 port = 8765
 ```
 
@@ -54,21 +54,21 @@ The web page and this server can run as separate processes on the same config. F
 - They share one SQLite catalog, which is safe across processes. Previews live there too, so any process can apply a preview, and `consume_preview` lets it run only once.
 - One session with the scales runs at a time, using a file lock in `state_dir`. It does not wait. A second apply, comparison, or preview with `read_scales` gets `apply_busy` at once, with nothing sent. Try again when the other finishes.
 - A change from either process makes all open previews stale, so nothing is applied on top of a list that has moved.
-- The lock covers one `state_dir` on one computer. It does not reach another computer or ScaleLink. Run one writer: the app on bartcc. Claude on BartCCSide reaches that same server over HTTP, and must not run its own server against the scales.
+- The lock covers one `state_dir` on one computer. It does not reach another computer or ScaleLink. Run one writer: the app on StoreServer. Claude on the lab PC reaches that same server over HTTP, and must not run its own server against the scales.
 
 ## Connecting Claude
 
 Never use `--scope project` for these. That writes the token into `.mcp.json` in the repo. `--scope user` keeps it in your own Claude settings, in plain text, so treat that file as private.
 
-**Claude on bartcc, local connection:**
+**Claude on StoreServer, local connection:**
 
 ```
 claude mcp add scaleconnect --scope user -e PYTHONPATH=$HOME/CCScaleApp/ScaleConnect/src -- $HOME/CCScaleApp/ScaleConnect/.venv/bin/python -m scaleconnect.mcp_server --stdio
 ```
 
-Claude on bartcc can also use the HTTP command below, if the HTTP server is running there. Pick one.
+Claude on StoreServer can also use the HTTP command below, if the HTTP server is running there. Pick one.
 
-**Claude on BartCCSide, over the store network:**
+**Claude on the lab PC, over the store network:**
 
 ```
 claude mcp add --transport http scaleconnect http://<STORE_HOST>:<PORT>/mcp --scope user --header "Authorization: Bearer <TOKEN>"
@@ -187,8 +187,8 @@ The tools `scale_compare_scales`, `scale_read_items`, `scale_preview_changes`, `
 **When the Scale Manager is away.** The page cannot clear a flag, on purpose. The Claude app on a phone cannot reach this server either, because it listens only on the store network. Clearing a flag takes one of these:
 
 - Claude Code on a computer on the store network, with this server.
-- The command line on bartcc, or on a computer on the store network. `frozen` there lists the flagged scales, and `compare --scale NAME` reads one. See `docs/CLI.md`.
-- From a phone: SSH to bartcc over Tailscale, then the command line, or Claude Code, there.
+- The command line on StoreServer, or on a computer on the store network. `frozen` there lists the flagged scales, and `compare --scale NAME` reads one. See `docs/CLI.md`.
+- From a phone: SSH to StoreServer over Tailscale, then the command line, or Claude Code, there.
 
 Ask someone at the store to look at the scale first. Then compare it once. `compared` clears it. `unreachable` means it still could not connect. `read_failed` with `may_be_frozen` true means it connected and then stopped answering, so it needs a reboot before another try. Until it is cleared, the page leaves that scale out of every check and change, and each change it misses is listed in `unfinished`.
 
@@ -215,7 +215,7 @@ For a delete or PLU change, `repeat` is the change that finishes it. A delete's 
 
 ### Scales, Square and labels
 
-A change to the scales is not finished until the Square register and the printed labels match. This server does not reach Square or print labels. Claude changes Square through its own Square connector. The labels are the case cards, and they are built in Claude chat with the `anthropic-skills:cc-case-cards` skill, because the sheet builder needs software that bartcc does not have. So Claude Code asks the person whether a card is needed, and if so gives them a short request to paste into Claude chat. The tool `scale_square_rules` holds the full rule, and contacts nothing. In short:
+A change to the scales is not finished until the Square register and the printed labels match. This server does not reach Square or print labels. Claude changes Square through its own Square connector. The labels are the case cards, and they are built in Claude chat with the `anthropic-skills:cc-case-cards` skill, because the sheet builder needs software that StoreServer does not have. So Claude Code asks the person whether a card is needed, and if so gives them a short request to paste into Claude chat. The tool `scale_square_rules` holds the full rule, and contacts nothing. In short:
 
 - Report scales, Square and labels separately. Say done only when all three are done, or the person has said to skip one. `success` still means only that every scale is verified.
 - Before applying, read the Square item, and show one preview of the scale change and the exact Square before and after. A yes to a preview that did not show the Square change is not a yes for Square.

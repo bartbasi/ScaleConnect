@@ -1,6 +1,6 @@
-# Installing the web page on bartcc
+# Installing the web page on StoreServer
 
-This covers the staff web page only. It needs no sudo and no systemd. bartcc uses SysVinit, so nothing here is a service. The page is started by a small script, from the desktop session or from cron.
+This covers the staff web page only. It needs no sudo and no systemd. StoreServer uses SysVinit, so nothing here is a service. The page is started by a small script, from the desktop session or from cron.
 
 The repo lives at `~/CCScaleApp/ScaleConnect`. The launcher files expect exactly that path.
 
@@ -24,11 +24,11 @@ The repo lives at `~/CCScaleApp/ScaleConnect`. The launcher files expect exactly
 pin = "pick-a-pin"          # the one shared PIN. The page will not start without it
 
 [web]
-host = "ADDRESS-OF-THIS-PC" # one IPv4 address of bartcc, as four numbers
+host = "ADDRESS-OF-THIS-PC" # one IPv4 address of StoreServer, as four numbers
 port = 8080
 ```
 
-- Use the address of bartcc on the store network, so phones can reach it. Use `127.0.0.1` to test on bartcc only.
+- Use the address of StoreServer on the store network, so phones can reach it. Use `127.0.0.1` to test on StoreServer only.
 - The host must be one real IPv4 address, written as four numbers. These are refused on purpose: a name, an IPv6 address, a wildcard in any spelling (`0.0.0.0`, `0`, `::` and so on), and the Tailscale range (100.64.0.0 to 100.127.255.255). The page binds to the one address you name, and answers only requests that use that address and port.
 - The PIN must be at least 4 characters.
 - The example PIN `change-me` counts as no PIN, and the page will not start.
@@ -65,7 +65,7 @@ The script keeps a pid file and a log in `~/.local/state/scaleconnect/`. If the 
 
 ## The MCP server
 
-The MCP server is what Claude uses. It has its own script, in the same style. It needs `[auth] mcp_token` and an `[mcp]` host and port in the config. Use one IPv4 address of bartcc, the same rules as the page.
+The MCP server is what Claude uses. It has its own script, in the same style. It needs `[auth] mcp_token` and an `[mcp]` host and port in the config. Use one IPv4 address of StoreServer, the same rules as the page.
 
 ```sh
 sh ~/CCScaleApp/ScaleConnect/deploy/scaleconnect-mcp.sh          # start if needed
@@ -77,18 +77,18 @@ It works like the page script. It is safe to run twice. It tries again for about
 
 ## Open the firewall for the store network
 
-bartcc has a firewall (ufw) that drops everything by default. Until it is opened, other computers cannot reach the page or the MCP server. This needs sudo, so the Scale Manager runs these two commands:
+StoreServer has a firewall (ufw) that drops everything by default. Until it is opened, other computers cannot reach the page or the MCP server. This needs sudo, so the Scale Manager runs these two commands:
 
 ```sh
 sudo ufw allow from STORE-NETWORK/24 to any port 8080 proto tcp
 sudo ufw allow from STORE-NETWORK/24 to any port 8765 proto tcp
 ```
 
-Replace `STORE-NETWORK/24` with the store network range, written as the first three numbers of the store addresses, then `.0/24`. The repo does not hold store addresses, so look them up on bartcc. If the config uses other ports, use those ports.
+Replace `STORE-NETWORK/24` with the store network range, written as the first three numbers of the store addresses, then `.0/24`. The repo does not hold store addresses, so look them up on StoreServer. If the config uses other ports, use those ports.
 
-The rule is limited to the store network on purpose. It keeps both ports off Tailscale and every other network bartcc is on. Do not open them to anywhere.
+The rule is limited to the store network on purpose. It keeps both ports off Tailscale and every other network StoreServer is on. Do not open them to anywhere.
 
-To check it, go to another computer or a phone on the store network and open `http://ADDRESS-OF-BARTCC:8080/`. The page should load. For the MCP server, the same address with port 8765 and path `/mcp` should answer 401 without a token. From a device that is not on the store network, neither should answer.
+To check it, go to another computer or a phone on the store network and open `http://ADDRESS-OF-STORESERVER:8080/`. The page should load. For the MCP server, the same address with port 8765 and path `/mcp` should answer 401 without a token. From a device that is not on the store network, neither should answer.
 
 ## When it starts
 
@@ -103,7 +103,7 @@ Both autostart entries run only when the desktop session of the user who runs Sc
 
 The scripts are safe to run twice. Each starts its server only if it is not already answering. When started this way, each tries again every 5 seconds for about 90 seconds, in case the WiFi is not up yet. The last two lines start both again 5 and 15 minutes after boot, because after a power cut the router can take longer than that to come back. A start that finds its server already answering does nothing.
 
-Then restart bartcc once with nobody logging in, and check that the page loads from a phone.
+Then restart StoreServer once with nobody logging in, and check that the page loads from a phone.
 
 ## PLU editing
 

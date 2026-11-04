@@ -616,7 +616,7 @@ The lock tells a running change from a dead one, in any process. While anything 
 
 `open` keeps a scale enabled only if the config is the local file at `~/.config/scaleconnect/config.toml`, or the scale's address is this PC. So a temp file passed with `--config` or `SCALECONNECT_CONFIG` cannot turn on a real scale. Any config with a write enabled scale must say how rule 5 is met: set `scalelink_db_path`, or `scalelink_db_copy = "not_available_here"`. The real config fails at `open` without it. Any other config gets `BackupFailed` at the first write, unless a custom `backup_hook` is passed.
 
-The lock covers one `state_dir` on one PC. It does not reach another PC or ScaleLink. Run one writer for the scales: the app on bartcc. Do not write from the command line on another PC at the same time.
+The lock covers one `state_dir` on one PC. It does not reach another PC or ScaleLink. Run one writer for the scales: the app on StoreServer. Do not write from the command line on another PC at the same time.
 
 ### How long things take
 

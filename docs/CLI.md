@@ -108,8 +108,8 @@ If you cannot clear it now, there is a way out. Turn that scale's reads and writ
 The page cannot clear a flag. That is on purpose. The Claude app on a phone cannot do it either, because the MCP server listens only on the store network, and the phone app cannot reach it. Use one of these:
 
 - Claude Code on a computer on the store network, with the ScaleConnect MCP server.
-- This command line on bartcc, or on a computer on the store network.
-- From a phone: SSH to bartcc over Tailscale, then this command line, or Claude Code, there.
+- This command line on StoreServer, or on a computer on the store network.
+- From a phone: SSH to StoreServer over Tailscale, then this command line, or Claude Code, there.
 
 Then:
 
@@ -208,4 +208,4 @@ scaleconnect change CHANGE_ID
 
 On Windows PowerShell, quoting JSON on the command line is awkward. Use `--file` or `--stdin` instead.
 
-Do not run the command line to write to scales from another computer at the same time as the app on bartcc. The apply lock covers one computer only.
+Do not run the command line to write to scales from another computer at the same time as the app on StoreServer. The apply lock covers one computer only.

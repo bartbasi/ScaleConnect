@@ -425,7 +425,7 @@ def test_an_add_or_edit_carries_the_test_item_rule_and_names_the_rules_tool(make
 
 
 def test_the_labels_rule_hands_cards_to_claude_chat():
-    """Claude Code on bartcc cannot build the card sheet, so the rule asks first and hands a request to Claude chat."""
+    """Claude Code on StoreServer cannot build the card sheet, so the rule asks first and hands a request to Claude chat."""
     labels = server_module._SQUARE_RULES["labels"]
     assert "built in Claude chat with the skill, not here" in labels
     assert "Do not try to build one" in labels

@@ -187,7 +187,7 @@ def test_main_refuses_to_start_with_no_pin_or_the_example_pin(tmp_path, capsys):
 
 
 def test_main_refuses_a_wildcard_host(tmp_path, capsys):
-    for host in ("0.0.0.0", "::", "", "0", "00.00.00.00", "::0", "localhost", "100.100.100.100", "bartcc"):
+    for host in ("0.0.0.0", "::", "", "0", "00.00.00.00", "::0", "localhost", "100.100.100.100", "StoreServer"):
         assert web_main(["--config", str(_config_file(tmp_path, 'pin = "abc123"', host))]) == 8
     assert "wildcard" in capsys.readouterr().err
 
@@ -196,7 +196,7 @@ def test_listen_host_check():
     assert listen_host_problem("0.0.0.0") and listen_host_problem("") and listen_host_problem("::")
     assert listen_host_problem("127.0.0.1") is None
     assert listen_host_problem("192.0.2.5") is None
-    for bad in ("0", "0.0", "0x0", "00.00.00.00", "::0", "0::0", "0000::", "::1", "localhost", "bartcc",
+    for bad in ("0", "0.0", "0x0", "00.00.00.00", "::0", "0::0", "0000::", "::1", "localhost", "StoreServer",
                 "100.64.0.1", "100.100.100.100", "100.127.255.255", "224.0.0.1", "169.254.1.1", "192.0.2.5/24", " "):
         assert listen_host_problem(bad), bad
     assert listen_host_problem("100.128.0.1") is None

@@ -418,7 +418,7 @@ def test_M5_no_free_id_names_the_way_forward(make_service, make_fake):
 @pytest.mark.parametrize(
     "host",
     ["0", "0.0", "0.0.0", "00.00.00.00", "000.000.000.000", "0x0", "0.0.0.0", "::", "::0", "0::0", "0:0:0:0:0:0:0:0", "0000::",
-     "::1", "localhost", "bartcc", "*", "", " ", "example.test", "1.2.3", "256.1.1.1", "127.0.0.1 "],
+     "::1", "localhost", "StoreServer", "*", "", " ", "example.test", "1.2.3", "256.1.1.1", "127.0.0.1 "],
 )
 def test_M7_only_a_real_ipv4_address_is_allowed(tmp_path, host):
     assert listen_problem(host)
