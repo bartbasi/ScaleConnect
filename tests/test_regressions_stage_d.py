@@ -583,7 +583,7 @@ def test_M5_turning_a_scale_off_in_the_config_file_stops_writes_at_once(make_env
     try:
         p = svc.preview_changes(EDIT_PRICE_12, requested_by="test")
         assert p.ok
-        write(False)  # Bart turns the scale off while the server is running
+        write(False)  # the Scale Manager turns the scale off while the server is running
         try:
             svc.apply_change(p.preview_id)
         except errors.ScaleConnectError:

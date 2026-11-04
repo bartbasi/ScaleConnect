@@ -91,7 +91,7 @@ Every change reports one result per scale. Use these exact statuses:
 
 A change is a full success only if every configured scale is `verified`. `accepted_not_verified` is a partial result and must be shown as such. Never call it confirmed.
 
-A full success means the scales only. Bart's rule is that a change is not finished until Square and the labels match too. No code here reaches them. Claude does it with its own connector and skill, as `docs/MCP.md` says, and the web page tells staff to tell the manager. A client cuts server instructions and tool descriptions at 4,096 characters, so the store's rules for this are in the result of a tool that contacts nothing, `scale_square_rules`, and the rule that matters most at each step is in that result's `next_step`.
+A full success means the scales only. The store's rule is that a change is not finished until Square and the labels match too. No code here reaches them. Claude does it with its own connector and skill, as `docs/MCP.md` says, and the web page tells staff to tell the manager. A client cuts server instructions and tool descriptions at 4,096 characters, so the store's rules for this are in the result of a tool that contacts nothing, `scale_square_rules`, and the rule that matters most at each step is in that result's `next_step`.
 
 The list of unfinished work takes no scale's word for what `verified` means. `verified` says a scale holds what was sent, and an edit sends that scale's own record with only the asked for fields changed. So the list also shows any row whose last record sent differs from the catalog in anything but the time, whatever its status. A miss the catalog did not take has no settle offered, because a settle puts the old value back.
 
@@ -119,13 +119,13 @@ The catalog records, per scale, the last record read, and when. A change counts 
 
 The service must never create a catalog. It refuses to run unless the catalog has a seeded marker, and service and seed share one path rule.
 
-Fields 7 to 12 and 14 to 20 are never set by callers as raw values. A new item takes one named choice, sold by weight or by piece, which sets field 7. All other fields take the defaults. Edits can change only price, description, PLU and Code. Editing a PLU sets Code to match, and a request where they differ is refused. Bart's check at FRONT on November 2 showed that a record at the same id with a new Code and PLU works, and that the old PLU stops working. Id decides which item is replaced, per the lab.
+Fields 7 to 12 and 14 to 20 are never set by callers as raw values. A new item takes one named choice, sold by weight or by piece, which sets field 7. All other fields take the defaults. Edits can change only price, description, PLU and Code. Editing a PLU sets Code to match, and a request where they differ is refused. A check at FRONT on November 2 showed that a record at the same id with a new Code and PLU works, and that the old PLU stops working. Id decides which item is replaced, per the lab.
 
 A PLU change is verified only if the id reads back as the new record and neither the old PLU nor the new one is on another id of that scale. It can land on one scale and not another. The catalog moves once any scale took it, and it notes each other scale as possibly still on the old record. A retry is the same edit. It needs an acknowledgement again, and it names the scales still behind. It accepts a scale holding either the old record or the new PLU with the same description, and treats anything else as a different product. Until it finishes, the old PLU is not free for another item, and settling toward that scale is refused, since it would undo the change. If every reply was lost, the catalog stays where it was and a scale may hold the new PLU, so both stay taken until a read or a repeat settles it. Only an edit that names the PLU may write a new one over what a scale holds. A price edit does not. Settling with `take="catalog"` does not either, and refuses with `plu_edit_held`, because it could overwrite what a scale holds with nobody having asked for a PLU change.
 
 ## Deletes
 
-A delete overwrites the id with a placeholder record. Bart approved this, and checked it at FRONT on November 2. `EP` is unproven and may have taken FRONT off the network, so the library never sends any `E` message, and it has no way to frame one.
+A delete overwrites the id with a placeholder record. The Scale Manager approved this, and checked it at FRONT on November 2. `EP` is unproven and may have taken FRONT off the network, so the library never sends any `E` message, and it has no way to frame one.
 
 The placeholder for id N has Code and PLU `9000 + N`, description `UNUSED`, price `0.01`, field 6 empty, the default fields 7 to 12 and 14 to 20, and a new timestamp. It is a normal `GP` record. A delete backs up first, reads first and reads back, like any write. It is verified only if the id holds the placeholder and the old PLU is on no other id of that scale. A different product at the id cannot be acknowledged. Field drift on the same product needs its token, including a timestamp alone.
 
@@ -149,7 +149,7 @@ Ids are limited to 500, and the real catalog is close to that. New items take th
 
 ## Config
 
-Path: `~/.config/scaleconnect/config.toml`. It holds scale names, addresses, write enabled flags, the PIN and the MCP token. Only FRONT is write enabled until Bart says otherwise. A running service refuses writes if the file has since gained anything it has not loaded, and says to restart both services. A flag turned off takes effect at once. The default for any scale with no flag is not write enabled. Code must run on Windows and Linux.
+Path: `~/.config/scaleconnect/config.toml`. It holds scale names, addresses, write enabled flags, the PIN and the MCP token. A scale is write enabled only when the Scale Manager turns it on. A running service refuses writes if the file has since gained anything it has not loaded, and says to restart both services. A flag turned off takes effect at once. The default for any scale with no flag is not write enabled. Code must run on Windows and Linux.
 
 ## Stack
 

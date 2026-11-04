@@ -138,7 +138,7 @@ def test_a_review_made_before_the_freeze_cannot_be_sent(make_web):
     assert r.json()["error"]["message"].startswith(DID_NOT_ANSWER) and lp(web, "B") == before
 
 
-def test_bart_clears_it_with_one_compare_of_that_scale_and_the_page_works_again(make_web):
+def test_the_scale_manager_clears_it_with_one_compare_of_that_scale_and_the_page_works_again(make_web):
     """Through Claude or the command line, once a person has looked: a compare of that scale that answers."""
     web = three(make_web)
     stall_at_send(web, [{"action": "edit", "target_plu": "1001", "price": "11.00"}])

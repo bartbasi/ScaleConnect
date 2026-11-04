@@ -67,7 +67,7 @@ def test_turning_a_flagged_scale_off_in_the_config_lets_the_page_send_to_the_oth
         web.env.fakes["B"].clear_faults()
     assert web.env.svc.scales_may_be_frozen() == ["B"]
 
-    # Bart turns B's reads and writes off in the config, then restarts web and MCP together.
+    # The Scale Manager turns B's reads and writes off in the config, then restarts web and MCP together.
     web.env.set_write_enabled("B", False)
     later = Web(web.env)
     later.login()

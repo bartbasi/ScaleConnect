@@ -29,7 +29,7 @@ def changed(web, monkeypatch):
 # ---------------------------------------------------------------- config_changed and target_changed
 
 
-def test_the_notice_words_say_nothing_was_sent_tell_bart_and_restart_both():
+def test_the_notice_words_say_nothing_was_sent_tell_the_scale_manager_and_restart_both():
     text = words.CONFIG_NOTICE
     assert "Nothing was sent." in text and "Tell the Scale Manager." in text
     assert "web page and the MCP server need restarting together" in text

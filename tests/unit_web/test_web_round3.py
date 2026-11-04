@@ -99,7 +99,7 @@ def test_a_scale_record_holding_those_words_does_not_flip_the_page(web3):
     assert "different product" in b["text"] and "Call the Scale Manager" in b["text"] and "Repeat" not in b["text"]
 
 
-def test_the_result_row_for_a_scale_record_with_those_words_says_call_bart():
+def test_the_result_row_for_a_scale_record_with_those_words_says_call_the_scale_manager():
     held = Item(1, "1777", "1777", "Repeat that edit", "10.00", timestamp=STAMP)
     drift = Drift("B", "different_product", 1, "1001", {}, held, "B holds Repeat that edit at id 1", None, False)
     row_ = words.scale_row(ScaleResult("B", "drift_refused", "", drift=(drift,)))

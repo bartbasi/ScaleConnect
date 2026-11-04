@@ -237,7 +237,7 @@ def test_scales_that_leave_out_a_scale_with_writes_off_add_nothing(make_env):
 
 
 def test_the_command_line_frozen_lists_flagged_scales_and_contacts_none(tmp_path, make_fake, capsys):
-    """For Bart away from the store, over SSH to bartcc."""
+    """For the Scale Manager away from the store, over SSH to bartcc."""
     from scaleconnect.catalog import Catalog
     from scaleconnect.config import load_config
 

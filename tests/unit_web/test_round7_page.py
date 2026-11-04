@@ -107,7 +107,7 @@ def test_a_compare_that_answers_clears_a_freeze_from_a_check(make_web):
 # ---------------------------------------------------------------- M2
 
 
-def test_a_change_leaves_a_frozen_scale_out_goes_to_the_others_and_stays_unfinished_until_bart_settles(make_web):
+def test_a_change_leaves_a_frozen_scale_out_goes_to_the_others_and_stays_unfinished_until_the_scale_manager_settles(make_web):
     web = three(make_web)
     check_with_b_silent(web)
     before = lp(web, "B")

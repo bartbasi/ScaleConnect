@@ -103,7 +103,7 @@ Only a read that answers clears it. Each such read keeps its place in the change
 
 If you cannot clear it now, there is a way out. Turn that scale's reads and writes both off in the config, then restart the web page and the MCP server together. The page stops counting it, and staff can send changes to the other scales. That scale gets no changes at all until you turn it back on. To turn it back on, set reads and writes back on, restart both, then run `compare --scale NAME` once. The flag is still there until a read answers.
 
-### When Bart is away
+### When the Scale Manager is away
 
 The page cannot clear a flag. That is on purpose. The Claude app on a phone cannot do it either, because the MCP server listens only on the store network, and the phone app cannot reach it. Use one of these:
 
@@ -201,7 +201,7 @@ Exit 0 from `scales`, `frozen`, `search`, `get`, `capabilities`, `change`, `chan
 scaleconnect search cheese --limit 10
 scaleconnect get --plu 4001
 scaleconnect preview --read --json '[{"action":"edit","target_plu":"4001","price":"12.75"}]'
-scaleconnect apply PREVIEW_ID --who bart
+scaleconnect apply PREVIEW_ID --who manager
 scaleconnect compare --scale SCALE1
 scaleconnect change CHANGE_ID
 ```

@@ -77,7 +77,7 @@ It works like the page script. It is safe to run twice. It tries again for about
 
 ## Open the firewall for the store network
 
-bartcc has a firewall (ufw) that drops everything by default. Until it is opened, other computers cannot reach the page or the MCP server. This needs sudo, so Bart runs these two commands himself:
+bartcc has a firewall (ufw) that drops everything by default. Until it is opened, other computers cannot reach the page or the MCP server. This needs sudo, so the Scale Manager runs these two commands:
 
 ```sh
 sudo ufw allow from STORE-NETWORK/24 to any port 8080 proto tcp
@@ -92,14 +92,16 @@ To check it, go to another computer or a phone on the store network and open `ht
 
 ## When it starts
 
-Both autostart entries run only when Bart's own desktop session starts. They do not run at boot with nobody logged in, or when someone else is logged in at the screen. So after a power cut, neither the page nor the MCP server comes back by itself. To start both at boot, add two lines to Bart's crontab. Run `crontab -e` and add:
+Both autostart entries run only when the desktop session of the user who runs ScaleConnect starts. They do not run at boot with nobody logged in, or when someone else is logged in at the screen. So after a power cut, neither the page nor the MCP server comes back by itself. To start both at boot, add these lines to that user's crontab. Run `crontab -e` and add:
 
 ```
 @reboot sh $HOME/CCScaleApp/ScaleConnect/deploy/scaleconnect-web.sh start --no-open
 @reboot sh $HOME/CCScaleApp/ScaleConnect/deploy/scaleconnect-mcp.sh start
+@reboot sleep 300; sh $HOME/CCScaleApp/ScaleConnect/deploy/scaleconnect-web.sh start --no-open; sh $HOME/CCScaleApp/ScaleConnect/deploy/scaleconnect-mcp.sh start
+@reboot sleep 900; sh $HOME/CCScaleApp/ScaleConnect/deploy/scaleconnect-web.sh start --no-open; sh $HOME/CCScaleApp/ScaleConnect/deploy/scaleconnect-mcp.sh start
 ```
 
-The scripts are safe to run twice. Each starts its server only if it is not already answering. When started this way, each tries again every 5 seconds for about 90 seconds, in case the WiFi is not up yet.
+The scripts are safe to run twice. Each starts its server only if it is not already answering. When started this way, each tries again every 5 seconds for about 90 seconds, in case the WiFi is not up yet. The last two lines start both again 5 and 15 minutes after boot, because after a power cut the router can take longer than that to come back. A start that finds its server already answering does nothing.
 
 Then restart bartcc once with nobody logging in, and check that the page loads from a phone.
 
@@ -137,7 +139,7 @@ The first program to open the catalog after an upgrade changes it to the new lay
 - **One shared PIN.** Everyone uses the same PIN, so the change log shows "web" and not a person.
 - **Sessions are kept in memory.** Restarting the page signs everyone out. They enter the PIN again.
 - **Wrong PINs lock out for a short time.** After five wrong tries from one device, that device waits 60 seconds. After 20 wrong tries from all devices together, everyone waits 60 seconds. So a device on the WiFi can keep staff out for a minute at a time. The log shows nothing of the PIN.
-- **Do not stop the page during a send.** `scaleconnect-web.sh stop` refuses while a change is going to the scales. `stop --force` overrides that. A change cut off that way is left as stopped, and it blocks its items until Bart looks at the scales and closes it on the page.
-- **Bart only tools.** The page has two screens for Bart. "Fix this difference" on an item settles which side is right when a scale differs. "Mark a scale number as taken" records that a scale holds something at a number our list does not know, so a new item can replace it. Both need the PIN, and both are for Bart, not for staff.
+- **Do not stop the page during a send.** `scaleconnect-web.sh stop` refuses while a change is going to the scales. `stop --force` overrides that. A change cut off that way is left as stopped, and it blocks its items until the Scale Manager looks at the scales and closes it on the page.
+- **Tools for the Scale Manager only.** The page has two screens for the Scale Manager. "Fix this difference" on an item settles which side is right when a scale differs. "Mark a scale number as taken" records that a scale holds something at a number our list does not know, so a new item can replace it. Both need the PIN, and both are for the Scale Manager, not for staff.
 - **One send at a time.** While a change is going to the scales, a second change is refused until it finishes. A phone can lock its screen during a send. Open the page again, and use "Recent changes" or "See the last change I sent" to see the result.
 - **Launcher quoting.** The `.desktop` files start the script with `sh -c` and `$HOME`. This works in Xfce, the MX Linux default. If a different desktop shows no icon or does nothing, run the script by hand and tell the lead.

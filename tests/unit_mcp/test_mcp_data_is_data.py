@@ -547,7 +547,7 @@ def test_an_add_blocked_by_a_stranger_can_be_cleared_all_the_way_to_verified(env
     assert preview["held_record"]["plu"] == "7777" and preview["confirm_token"]
     assert env.catalog.orphan_ids() == {}, "a preview changes nothing"
 
-    marked = session.data("scale_mark_orphan", scale="A", id=4, confirm_token=preview["confirm_token"], note="Test record. Bart said it can go.")
+    marked = session.data("scale_mark_orphan", scale="A", id=4, confirm_token=preview["confirm_token"], note="Test record. The Scale Manager said it can go.")
     assert marked["ok"] is True and "Nothing was written to the scale" in marked["summary"]
     assert env.catalog.orphan_ids() == {4: ["A"]}
     assert fake.item(4)[3] == "Stranger Item" and not fake.messages_of("GP")

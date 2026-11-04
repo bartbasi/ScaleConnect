@@ -287,7 +287,7 @@ def test_the_script_offers_repeat_that_edit_when_a_plu_change_did_not_finish_eve
     assert "may not have finished on every scale" in result
 
 
-def test_a_different_product_at_the_id_still_says_call_bart(web3):
+def test_a_different_product_at_the_id_still_says_call_the_scale_manager(web3):
     web3.login()
     p = web3.preview(MOVE).json()
     web3.env.fakes["B"].preload(tuple(web3.env.catalog.get_by_plu("1001").replace(plu="1777", code="1777").to_fields()))

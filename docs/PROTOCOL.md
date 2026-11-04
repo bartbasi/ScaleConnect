@@ -2,18 +2,18 @@
 
 For the driver. Written in our own words from packet captures and tests on the test scale. No addresses, no real product data and no vendor code belong in this file.
 
-**Status, November 2, 2026.** The read is found and works, and can freeze a scale (section 3). Delete is done by overwriting the id with a placeholder, and Bart checked that at the test scale. A delete message probably exists too, but no test has shown that it removes anything, and it is never sent (section 7). Sections marked "not tested" are still open.
+**Status, November 2, 2026.** The read is found and works, and can freeze a scale (section 3). Delete is done by overwriting the id with a placeholder, and the Scale Manager checked that at the test scale. A delete message probably exists too, but no test has shown that it removes anything, and it is never sent (section 7). Sections marked "not tested" are still open.
 
 ## Confidence labels
 
 | Label | Meaning |
 |---|---|
-| **Bart** | Confirmed at a scale by Bart |
+| **Seen at the scale** | Confirmed by a person at the scale |
 | **Reply** | The scale's reply only. Nobody looked at the display |
 | **Reply, read back** | The scale's reply, and a later read returned the same data. The read shows what is stored, not what the display or a label does with it |
 | **Inferred** | Our reasoning from evidence. Not tested directly |
 
-Nobody could see the test scale's display during the lab. No result from the lab is **Bart** unless it says so.
+Nobody could see the test scale's display during the lab. No result from the lab is **Seen at the scale** unless it says so.
 
 ## Evidence pointers
 
@@ -33,9 +33,9 @@ Private files on the lab PC. They never go in the repo.
 | Job | How | Confidence |
 |---|---|---|
 | Read all items | Send `LP`, then `Ok` after each block, until `LP00End` | Reply, read back |
-| Add or change an item | `bX01XX`, `GP` batches, `GPF0` | Bart |
-| Delete an item | Overwrite the id with a placeholder record, using the add or change sequence. Never send `EP` | Bart |
-| Change a PLU | Same id with a new Code and PLU, using the add or change sequence. The old PLU stops working | Bart |
+| Add or change an item | `bX01XX`, `GP` batches, `GPF0` | Seen at the scale |
+| Delete an item | Overwrite the id with a placeholder record, using the add or change sequence. Never send `EP` | Seen at the scale |
+| Change a PLU | Same id with a new Code and PLU, using the add or change sequence. The old PLU stops working | Seen at the scale |
 | Identify a scale | `CX` | Reply |
 
 ## 1. Transport
@@ -49,7 +49,7 @@ Private files on the lab PC. They never go in the repo.
 
 ### Messages to the scale
 
-Text, then TAB, LF, one check character, CR. (Bart. Matched every framed message captured.)
+Text, then TAB, LF, one check character, CR. (Seen at the scale. Matched every framed message captured.)
 
 Check character: for each byte from the first through the LF, multiply by a weight of 2, 3, 4, 5, 6, 7, 8, repeating. Take the negative of the total, mod 11. Add 0x30. A value of 10 comes out as `:`.
 
@@ -137,7 +137,7 @@ Not proven: the scale resent a block because an `Ok` was late on WiFi. It fits t
 
 Also that day: KITCHEN failed a read at 14:23 with no freeze, and the reason was lost. KITCHEN timed out at 15:03 with a possible freeze, and we don't know how far it got. So a read now names the ids in this failure and logs every problem. It can also read once more, only after this one kind of failure, and only with a setting that is off by default. On the test scale, a stopped read followed by a whole read 5 seconds later passed 20 of 20. Later, on November 3, a scale failed one read with blocks out of order, and a second read run by hand straight after passed. (Read problem log, November 3.) The library's own repeat has not run on a real scale yet. Other odd answers do not count: the blank records in the table above came right before a freeze. See `docs/LIBRARY.md`, "When a read goes wrong". The next time this happens, that log says whether the block was an exact repeat.
 
-Bart reports ScaleLink's own read hangs. We have no capture of it. Our read did not hang in two full reads and a dozen partial ones.
+The Scale Manager reports that ScaleLink's own read hangs. We have no capture of it. Our read did not hang in two full reads and a dozen partial ones.
 
 Caution: the test scale left the network 9 s after the delete probes, on the next `LP`. It had just done two full reads with no trouble, so the delete probes are the likely cause, not the read. That is not proven. See section 7.
 
@@ -177,24 +177,24 @@ The sequence ScaleLink uses:
 3. Send a batch: `GP`, a two digit count, then the records, separated by TAB LF, framed. Wait for the reply before the next batch.
 4. Send `GPF0\t\n8\r`. Reply `GPF0Ok\t\n5\r`. Close.
 
-(Bart. test1 to test7)
+(Seen at the scale. test1 to test7)
 
 Reply to a batch is `<echo>\rOk\t\n<check>\r` or `<echo>\rError\t\n<check>\r`. **Check this reply on every batch.** `GPF0Ok` comes back either way. (Reply. test8 stream 1 has an `Error` followed by `GPF0Ok`.)
 
 What is proven:
 
 - ScaleLink's 484 items in batches of 5 were stored exactly as sent. (Reply, read back)
-- Our own code changed a price on all three scales, and only the targeted scale changed when one was targeted. (Bart)
-- A new item uses the same message with a new id. (Bart)
-- Same id with a new PLU, description and price replaces the item in place. The old PLU disappeared on all three scales. (Bart)
-- Same id with a new Code and PLU works, and the old PLU stops working. PLU and Code are always the same 4 digit number. (Bart, November 2. See section 7.)
+- Our own code changed a price on all three scales, and only the targeted scale changed when one was targeted. (Seen at the scale)
+- A new item uses the same message with a new id. (Seen at the scale)
+- Same id with a new PLU, description and price replaces the item in place. The old PLU disappeared on all three scales. (Seen at the scale)
+- Same id with a new Code and PLU works, and the old PLU stops working. PLU and Code are always the same 4 digit number. (Seen at the scale, November 2. See section 7.)
 - **Id decides which item is replaced, not Code or PLU.** Two ids hold the same Code and PLU side by side. Id 485 holds the last Code sent, and its old Code is gone from the read. (Reply, read back. first dump, ids 485, 493, 498) What the scale does when staff enter a PLU held by two ids is unknown.
 
 Ids:
 
 - Above 500 gets `Error`. This happened when the table had room, so the limit is on the id number, not just on how many items. (Reply. test8 for ids 600 and up, prompt for the 500 and 501 boundary.) ScaleLink's message file also says 500 products for this kind of scale.
 - Id 500 stores. (Reply, read back)
-- Id 0 gets `Ok` but never appears in a read. Do not use it. It may be gone or hidden. (Reply, read back. Bart needs to check if its PLU exists on the display.)
+- Id 0 gets `Ok` but never appears in a read. Do not use it. It may be gone or hidden. (Reply, read back. The Scale Manager needs to check if its PLU exists on the display.)
 - All 500 ids were in use at every read, so a read of a scale with free ids has not been seen.
 
 Values the scale stored without complaint, all returned unchanged by a read: a 100 character name, raw Latin-1 accents, `& % # ' ( )`, price `1000.00`, price `5`, price `0.01`, 3 and 5 digit Code and PLU, duplicate PLU. (Reply, read back. first dump, ids 486 to 500) The only `Error` cause seen so far is an id above 500. **The scale checks almost nothing, so ScaleConnect must.** What the display and labels do with these values is unknown.
@@ -205,7 +205,7 @@ It gets the same treatment as an unknown message: a close with no reply in about
 
 ### What `bX01XX` does
 
-The reply takes about 1.04 s, sometimes 0.27 to 0.75 s. The other two messages with a slow reply and an `XXX` in it are `S` and `D` below. After a session of `bX01XX` with no `GP` and no `GPF0`, all 500 records were still there. Ids 485 to 500 also lived through two full sends with `bX01XX` and `GPF0`. So it does not erase items. (Reply, read back. lab log `p01_baseline`, first dump. Also Bart.) A `GP` without it, and other values in place of `X01XX`, have not been tested. Keep sending it.
+The reply takes about 1.04 s, sometimes 0.27 to 0.75 s. The other two messages with a slow reply and an `XXX` in it are `S` and `D` below. After a session of `bX01XX` with no `GP` and no `GPF0`, all 500 records were still there. Ids 485 to 500 also lived through two full sends with `bX01XX` and `GPF0`. So it does not erase items. (Reply, read back. lab log `p01_baseline`, first dump. Also seen at the scale.) A `GP` without it, and other values in place of `X01XX`, have not been tested. Keep sending it.
 
 ### What `GPF0` does
 
@@ -230,13 +230,13 @@ Replacing an id removes the old PLU, so this needs no message of its own. It is 
 | Time | When it was sent |
 | Fields 14 to 20 | All `0` |
 
-Tested on FRONT on November 2, 2026. Through the library's own send and read, ids 485 to 487 went from item records to placeholders and back, and each read back exactly, such as `486, 9486, 9486, UNUSED, 0.01`. Bart then checked at the scale, and all six PLUs came out as expected. (Bart)
+Tested on FRONT on November 2, 2026. Through the library's own send and read, ids 485 to 487 went from item records to placeholders and back, and each read back exactly, such as `486, 9486, 9486, UNUSED, 0.01`. The Scale Manager then checked at the scale, and all six PLUs came out as expected. (Seen at the scale)
 
 Staff look items up only by PLU, so a placeholder does no harm. It does use up the slot until an add writes over it. (Inferred)
 
 ### `E`: what the probes showed
 
-These tests are why `E` stays unused. They are all our data. No more `E` tests without a fresh decision from Bart.
+These tests are why `E` stays unused. They are all our data. No more `E` tests without a fresh decision from the Scale Manager.
 
 After the `EP` tests below, FRONT dropped off the network, then froze within seconds of every reboot until its products were factory reset. Either those messages or the odd test records stored on it caused that. We can't separate the two.
 
@@ -286,7 +286,7 @@ The connection stays open and `CX` works after. A full read after `DP` was ident
 
 ## Ids can differ between scales
 
-The scale replaces a record by id. ScaleLink's import appears to renumber products, because its file has no ids (`SCALELINK_FILE.md`). A scale that misses the next full send keeps the old order. Each one item send then lands on another product. Seen on COUNTER on November 2: same products up to id 24, different products from id 25, and one product confirmed lost. Never assume a catalog id matches a scale. Read that scale's own record first. A full send of ids 1 to N puts the scale back in step. (Read, capture, Bart's check at the scale. notebook "November 2")
+The scale replaces a record by id. ScaleLink's import appears to renumber products, because its file has no ids (`SCALELINK_FILE.md`). A scale that misses the next full send keeps the old order. Each one item send then lands on another product. Seen on COUNTER on November 2: same products up to id 24, different products from id 25, and one product confirmed lost. Never assume a catalog id matches a scale. Read that scale's own record first. A full send of ids 1 to N puts the scale back in step. (Read, capture, the Scale Manager's check at the scale. notebook "November 2")
 
 ## 8. The record
 
@@ -296,11 +296,11 @@ The middle column compares a full send with ScaleLink's item table. "All 484" me
 
 | Pos | Meaning | Evidence | Confidence |
 |---|---|---|---|
-| 1 | Id | All 484 | Bart |
-| 2 | Code | All 484 | Bart |
-| 3 | PLU. What staff enter | All 484 | Bart |
-| 4 | Description. ScaleLink drops trailing spaces | All 484 apart from those spaces | Bart |
-| 5 | Price as text | All 484 | Bart |
+| 1 | Id | All 484 | Seen at the scale |
+| 2 | Code | All 484 | Seen at the scale |
+| 3 | PLU. What staff enter | All 484 | Seen at the scale |
+| 4 | Description. ScaleLink drops trailing spaces | All 484 apart from those spaces | Seen at the scale |
+| 5 | Price as text | All 484 | Seen at the scale |
 | 6 | Image file name. Empty or one space on every real item | All 484, including which ones have the space | Inferred. Keep what the item has |
 | 7 | Type. 1 by weight, 0 by piece | All 484, 19 of them 0. ScaleLink's product report prints 0 as not weighed | Inferred. Keep it |
 | 8 | Probably price can be edited at the scale | Constant 1 | Inferred, weakly. Keep it |
@@ -308,7 +308,7 @@ The middle column compares a full send with ScaleLink's item table. "All 484" me
 | 10 | Tax | All 484, including the one non zero value | Inferred, strongly. Keep it |
 | 11 | Probably a multiple | Constant 0. Follows the column order | Inferred, weakly. Keep it |
 | 12 | Unknown | Constant 0 | Keep it |
-| 13 | Time of last edit, `YYYY-MM-DD HH:MM:SS` | All 484, reordered from the table | Bart for the format |
+| 13 | Time of last edit, `YYYY-MM-DD HH:MM:SS` | All 484, reordered from the table | Seen at the scale, for the format |
 | 14 to 20 | Unknown. Probably some of ingredient, nutrition, ads, offer, tare | Constant 0 | Keep them |
 
 For a new item, use what `DESIGN.md` says. Nobody has tested other values in fields 8, 9, 11, 12 or 14 to 20.
@@ -320,9 +320,9 @@ For a new item, use what `DESIGN.md` says. Nobody has tested other values in fie
 | Ids | 1 to 500. See section 6 | Reply, read back |
 | Items | 500 at most, since ids stop there | Inferred |
 | Description, stored | 100 characters stored in full. Above that not tested | Reply, read back |
-| Description, shown | Unknown. Longest real one is 35. Keep the limit at 35 until Bart checks a label | Unknown |
+| Description, shown | Unknown. Longest real one is 35. Keep the limit at 35 until the Scale Manager checks a label | Unknown |
 | Characters, stored | Raw single bytes stored as sent | Reply, read back |
-| Characters, shown | Unknown. Real descriptions use only letters, digits, spaces and `( ) . - / # +`. Keep to printable ASCII until Bart checks | Unknown |
+| Characters, shown | Unknown. Real descriptions use only letters, digits, spaces and `( ) . - / # +`. Keep to printable ASCII until the Scale Manager checks | Unknown |
 | Price | Scale stores anything. ScaleLink's message file gives 999.99 as the top for two decimals | Reply, read back |
 | PLU and Code length | 3 and 5 digits stored. Whether they can be looked up is unknown. ScaleLink's message file says Code up to 999999 and PLU up to 99999 | Reply, read back |
 | Records per batch | 5 proven by read back. 6, 10, 15, 18 got `Ok`, with no read back since the items were overwritten later | Reply |
@@ -362,7 +362,7 @@ Reply waits on full sends in test9 and test10. (Reply. `research/lab/cap_timing.
 - Change a PLU by writing the same id with a new Code and PLU. Code always follows the PLU.
 - Say the scale may have frozen when a read gets no reply, or when it answered badly and then did not close when we hung up. See section 3.
 - Read once more, once, only if that setting is on, and only after blocks out of order that came after a good block, on a scale that then closed. Never after any other bad answer, never after silence, and never on a write.
-- Reads of production scales need Bart's go ahead at the final gate.
+- Reads of production scales need the Scale Manager's go ahead at the final gate.
 
 ## 12. Still unknown
 
@@ -393,7 +393,7 @@ Earlier beliefs that turned out wrong or incomplete. (Reply, read back. notebook
 
 ## Label settings, seen only
 
-ScaleLink sets the scale's label and barcode settings with their own messages. All were sent after `bX01XX`, and all were seen from captures only. They carry no product records, so a label change doesn't touch items. ScaleConnect doesn't send these and has no reason to. Bart keeps doing this in ScaleLink.
+ScaleLink sets the scale's label and barcode settings with their own messages. All were sent after `bX01XX`, and all were seen from captures only. They carry no product records, so a label change doesn't touch items. ScaleConnect doesn't send these and has no reason to. The Scale Manager keeps doing this in ScaleLink.
 
 | Message | Seen doing |
 |---|---|

@@ -809,7 +809,7 @@ def test_cli_reload_refuses_a_scale_that_is_not_write_enabled(tmp_path, make_fak
 
 def test_cli_reload_runs_and_reports(tmp_path, make_fake, capsys):
     fake = make_fake()
-    code, out = run_cli(capsys, "--config", write_config(tmp_path, fake), "reload", "--scale", "A", "--yes", "--accept-differences", "--who", "bart")
+    code, out = run_cli(capsys, "--config", write_config(tmp_path, fake), "reload", "--scale", "A", "--yes", "--accept-differences", "--who", "manager")
     assert code == 0 and out["ok"] and out["status"] == "verified" and out["top_id"] == 3
     assert "Ids 1 to 3 now match the catalog" in out["message"]
     assert fake.accepted_ids() == [1, 2, 3]

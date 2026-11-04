@@ -60,7 +60,7 @@ STATUS_SEVERITY = (
 ITEM_NOT_SENT = "not_sent"
 
 
-# A delete overwrites the record with a placeholder, so the old PLU stops working. Bart approved
+# A delete overwrites the record with a placeholder, so the old PLU stops working. The Scale Manager approved
 # this on November 2. Each id has its own placeholder PLU, and ids run 1 to 500, so 9001 to 9500
 # is held back. Real items use 1001 to 7262.
 PLACEHOLDER_PLU_BASE = 9000

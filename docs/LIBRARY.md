@@ -111,7 +111,7 @@ Rules:
 
 ### Changing a PLU
 
-`{"action": "edit", "target_plu": "4001", "plu": "4005"}` writes the same id with the new PLU and Code, and every other field as that scale holds it. Bart's check on November 2 showed that this works and that the old PLU stops working.
+`{"action": "edit", "target_plu": "4001", "plu": "4005"}` writes the same id with the new PLU and Code, and every other field as that scale holds it. A check at the scale on November 2 showed that this works and that the old PLU stops working.
 
 - **Refused at preview:** a PLU another catalog item holds, or one a scale may still hold from an unfinished PLU change or delete (`duplicate_plu`), a PLU in 9001 to 9500 (`reserved_plu`), a bad PLU (`invalid_plu`), a Code that differs (`code_plu_mismatch`).
 - **Refused per scale, with no way to acknowledge it:** the new PLU on another id, or the old PLU on another id (`plu_on_other_id`), and a different product at the id (`different_product`). Field drift on the same product needs its token, as with any write. These checks read the whole table.
@@ -124,7 +124,7 @@ Rules:
 
 ### Delete by placeholder
 
-A delete overwrites the record's id with a placeholder, because replacing an id removes the old PLU. No `E` message exists in this library, and none can be framed. Bart approved this on November 2.
+A delete overwrites the record's id with a placeholder, because replacing an id removes the old PLU. No `E` message exists in this library, and none can be framed. The Scale Manager approved this on November 2.
 
 The placeholder for id N has Code and PLU `9000 + N`, description `UNUSED`, price `0.01`, an empty field 6, the default fields 7 to 12 and 14 to 20, and a new timestamp. `models.placeholder_record` builds it, and `models.is_placeholder` needs every field but the time to match.
 

@@ -119,7 +119,7 @@ def test_failed_never_says_nothing_changed_when_a_scale_may_hold_it():
     assert "Nothing was sent" in words.result_heading("failed", ["unreachable", "read_failed"], False)[0]
 
 
-def test_different_product_row_says_call_bart(env):
+def test_different_product_row_says_call_the_scale_manager(env):
     from scaleconnect.models import Drift
 
     d = Drift("A", "id_occupied", 1, None, {}, None, "A holds something here.", None)
@@ -160,7 +160,7 @@ def test_item_page_says_different_product_not_matches(web):
     web.env.catalog.record_scale_reads("A", [item(1, "9999", "Test Cheddar", "10.00")], "2026-01-02T00:00:00")
     d = web.client.get("/api/item/1001").json()
     row = d["scales"][0]
-    assert row["flag"] == "different_product" and "plu" in row["differs"] and row["can_fix"] is True  # Bart may settle it
+    assert row["flag"] == "different_product" and "plu" in row["differs"] and row["can_fix"] is True  # the Scale Manager may settle it
     assert "DIFFERENT PRODUCT" in row["text"] and "Call the Scale Manager" in row["text"]
     assert row["last_read"]["plu"] == "9999"
 
@@ -319,7 +319,7 @@ def test_a_change_another_program_is_sending_is_working_not_stopped(web):
     d = web.client.get("/api/send/deadpreview").json()  # the lock is free now, so it died
     assert d["state"] == "stalled"
 
-def test_a_stopped_change_can_be_closed_by_bart_after_looking(web):
+def test_a_stopped_change_can_be_closed_by_the_scale_manager_after_looking(web):
     cid = _dead_change(web.env)
     assert web.post("/api/resolve", {"change_id": cid, "note": "looked, FRONT is fine"}, csrf=None).status_code == 401
     web.login()
@@ -402,7 +402,7 @@ def test_check_now_reads_the_scale_so_the_item_page_can_flag_a_difference(web):
     assert row["flag"] == "different" and row["differs"] == ["price"] and row["can_fix"] is True
     assert web.env.writes("A") == []
 
-def test_bart_can_settle_a_different_product_from_the_settle_screen_only(web):
+def test_the_scale_manager_can_settle_a_different_product_from_the_settle_screen_only(web):
     hold(web.env.fakes["A"], item(1, "9999", "Renamed In ScaleLink", "10.00"))
     web.login()
     p = web.post("/api/settle/preview", {"scale": "A", "take": "scale", "plu": "1001"}).json()
